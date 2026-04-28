@@ -13,7 +13,7 @@ Commands:
   desktop   Build production assets, then open the desktop app
   build     Typecheck, Vite build, and bundle the Electron main process
   dist      Build installers for this OS into ./release/ (Linux: AppImage + tar.gz; Windows: NSIS + portable). Full matrix on GitHub tag.
-  release   Bump version + tag for GitHub (scripts/release.sh). No arg = patch bump; or minor|major|exact semver
+  release   Bump version + tag + push branch/tag to origin (scripts/release.sh). No arg = patch; or minor|major|semver
   setup     Install npm dependencies only (pass --force to reinstall)
   help      Show this message
 

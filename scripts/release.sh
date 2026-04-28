@@ -12,9 +12,8 @@ usage() {
   echo "  major              Bump major (e.g. 0.9.0 -> 1.0.0)"
   echo "  <semver>           Set exact version (e.g. 0.2.0 or 1.0.0-rc.1)"
   echo ""
-  echo "Updates package.json / package-lock.json, commits, and tags v<semver>."
-  echo "Then push branch and tag so GitHub Actions can publish installers:"
-  echo '  git push origin "$(git branch --show-current)" && git push origin "v<semver>"'
+  echo "Updates package.json / package-lock.json, commits, tags v<semver>, and pushes"
+  echo "the current branch + tag to origin (override remote: RELEASE_REMOTE=myfork)."
   exit 1
 }
 
@@ -69,6 +68,19 @@ git commit -m "chore: release v${VERSION}"
 TAG="v${VERSION}"
 git tag -a "${TAG}" -m "Release ${TAG}"
 
+REMOTE="${RELEASE_REMOTE:-origin}"
+if ! git remote get-url "${REMOTE}" &>/dev/null; then
+  echo "Error: git remote '${REMOTE}' is not configured. Set RELEASE_REMOTE or add the remote." >&2
+  exit 1
+fi
+BRANCH="$(git branch --show-current)"
+if [[ -z "${BRANCH}" ]]; then
+  echo "Error: not on a named branch (detached HEAD). Checkout a branch before releasing." >&2
+  exit 1
+fi
+
 echo "Created commit and annotated tag ${TAG}."
-echo "Push to trigger the release workflow:"
-echo "  git push origin \"$(git branch --show-current)\" && git push origin \"${TAG}\""
+echo "Pushing branch '${BRANCH}' and tag '${TAG}' to ${REMOTE}…"
+git push "${REMOTE}" "${BRANCH}"
+git push "${REMOTE}" "${TAG}"
+echo "Done. GitHub Actions should run the Release workflow for ${TAG}."
