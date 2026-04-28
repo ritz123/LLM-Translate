@@ -1,10 +1,10 @@
 import path from "node:path";
-import { BrowserWindow } from "electron";
+import { app, BrowserWindow } from "electron";
 
 export function createSplashWindow(root: string): BrowserWindow {
   const win = new BrowserWindow({
     width: 440,
-    height: 300,
+    height: 320,
     frame: false,
     resizable: false,
     movable: true,
@@ -18,6 +18,13 @@ export function createSplashWindow(root: string): BrowserWindow {
       nodeIntegration: false,
     },
   });
-  void win.loadFile(path.join(root, "electron", "splash.html"));
+  const htmlPath = path.join(root, "electron", "splash.html");
+  win.webContents.once("did-finish-load", () => {
+    const version = app.getVersion();
+    void win.webContents.executeJavaScript(
+      `(() => { const el = document.getElementById("splash-version"); if (el) el.textContent = ${JSON.stringify(`v${version}`)}; })()`,
+    );
+  });
+  void win.loadFile(htmlPath);
   return win;
 }

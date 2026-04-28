@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { listGeminiModels } from "../server/llm/geminiListModels.ts";
 import { listOllamaModels } from "../server/llm/ollamaListModels.ts";
 import {
@@ -11,6 +11,11 @@ import { importDocumentViaDialog } from "./importDocument.ts";
 
 export function registerIpcHandlers(s: TranslationService): void {
   ipcMain.handle("desktop:get-config", () => ({ modelVersion: s.getModelVersion() }));
+
+  ipcMain.handle("desktop:get-app-info", () => ({
+    name: app.getName(),
+    version: app.getVersion(),
+  }));
 
   ipcMain.handle("desktop:debug-info", () => s.getDebugInfo());
 

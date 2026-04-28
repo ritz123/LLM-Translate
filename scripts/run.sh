@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Easy entry: ./run.sh | ./run.sh dev | ./run.sh desktop | ./run.sh build | ./run.sh setup
+# Easy entry: ./run.sh | dev | desktop | build | dist | release | setup
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -12,6 +12,8 @@ Commands:
   dev       Start development (default): Electron + Vite hot reload
   desktop   Build production assets, then open the desktop app
   build     Typecheck, Vite build, and bundle the Electron main process
+  dist      Build installers for this OS into ./release/ (Linux: AppImage + tar.gz; Windows: NSIS + portable). Full matrix on GitHub tag.
+  release   Prepare a version tag for GitHub (see scripts/release.sh); pass semver, e.g. 0.2.0
   setup     Install npm dependencies only (pass --force to reinstall)
   help      Show this message
 
@@ -19,6 +21,8 @@ Examples:
   ./run.sh
   ./run.sh dev
   ./run.sh desktop
+  ./run.sh dist
+  ./run.sh release 0.2.0
   ./run.sh setup --force
 EOF
 }
@@ -27,7 +31,7 @@ if [[ $# -ge 1 ]]; then
   CMD="$1"
   shift
 else
-  CMD="dev"
+  CMD="desktop"
 fi
 
 case "$CMD" in
@@ -36,22 +40,26 @@ case "$CMD" in
     exit 0
     ;;
   dev)
-    "$ROOT/scripts/setup.sh" 2>&1 | tee setup.log
-    echo "→ npm run dev (Electron + Vite)"
+    "$ROOT/scripts/setup.sh" 2>&1 > setup.log
     exec npm run dev 2>&1 | tee dev.log
     ;;
   desktop)
-    "$ROOT/scripts/setup.sh" 2>&1 | tee setup.log
-    echo "→ npm run desktop (build + Electron)"
-    exec npm run desktop 2>&1 | tee desktop.log
+    "$ROOT/scripts/setup.sh" 2>&1 > setup.log
+    exec npm run desktop 2>&1 > desktop.log
     ;;
   build)
-    "$ROOT/scripts/setup.sh" 2>&1 | tee setup.log 
-    echo "→ npm run build"
-    exec npm run build 2>&1 | tee build.log
+    "$ROOT/scripts/setup.sh" 2>&1 > setup.log 
+    exec npm run build 2>&1 > build.log
+    ;;
+  dist)
+    "$ROOT/scripts/setup.sh" 2>&1 > setup.log
+    exec npm run dist 2>&1 > dist.log
+    ;;
+  release)
+    exec "$ROOT/scripts/release.sh" "$@"
     ;;
   setup)
-    exec "$ROOT/scripts/setup.sh" "$@" 2>&1 | tee setup.log
+    exec "$ROOT/scripts/setup.sh" "$@" 2>&1 > setup.log
     ;;
   *)
     echo "Unknown command: $CMD" >&2

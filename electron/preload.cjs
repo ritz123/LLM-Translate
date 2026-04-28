@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("translatorDesktop", {
     closeWindow: () => ipcRenderer.invoke("desktop:window-close"),
   },
   getConfig: () => ipcRenderer.invoke("desktop:get-config"),
+  getAppInfo: () => ipcRenderer.invoke("desktop:get-app-info"),
   getDebugInfo: () => ipcRenderer.invoke("desktop:debug-info"),
   debugLlmPing: () => ipcRenderer.invoke("desktop:debug-llm-ping"),
   getLlmUserSettings: () => ipcRenderer.invoke("desktop:get-llm-user-settings"),

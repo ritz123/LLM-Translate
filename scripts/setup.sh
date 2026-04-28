@@ -6,6 +6,11 @@ cd "$ROOT"
 
 STAMP="node_modules/.translator-llm-setup-stamp"
 
+# Quieter default output (skip funding tips and post-install audit report).
+npm_install() {
+  npm install --no-fund --no-audit --loglevel=warn "$@"
+}
+
 force=false
 for arg in "$@"; do
   case "$arg" in
@@ -20,7 +25,7 @@ fi
 
 if $force; then
   echo "Running npm install (--force)…"
-  npm install
+  npm_install
   mkdir -p node_modules
   touch "$STAMP"
   exit 0
@@ -28,14 +33,14 @@ fi
 
 if [[ ! -d node_modules ]]; then
   echo "Dependencies not present (no node_modules/). Running npm install…"
-  npm install
+  npm_install
   touch "$STAMP"
   exit 0
 fi
 
 if [[ ! -f "$STAMP" ]]; then
   echo "No setup stamp — running npm install…"
-  npm install
+  npm_install
   touch "$STAMP"
   exit 0
 fi
@@ -50,7 +55,7 @@ fi
 
 if $need_install; then
   echo "package.json or package-lock.json changed since last setup. Running npm install…"
-  npm install
+  npm_install
   touch "$STAMP"
   exit 0
 fi

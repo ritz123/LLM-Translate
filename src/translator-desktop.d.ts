@@ -67,9 +67,15 @@ export interface TranslatorShellAPI {
   closeWindow(): Promise<void>;
 }
 
+export interface AppInfoPayload {
+  name: string;
+  version: string;
+}
+
 export interface TranslatorDesktopAPI {
   shell?: TranslatorShellAPI;
   getConfig(): Promise<{ modelVersion: string }>;
+  getAppInfo(): Promise<AppInfoPayload>;
   getDebugInfo(): Promise<TranslatorDebugInfo>;
   debugLlmPing(): Promise<TranslatorDebugLlmPingResult>;
   getLlmUserSettings(): Promise<LlmUserSettingsPayload>;

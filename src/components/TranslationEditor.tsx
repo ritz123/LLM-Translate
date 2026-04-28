@@ -1,15 +1,18 @@
-import { useCallback, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { flushSync } from "react-dom";
 import {
   Alert,
   AppBar,
   Box,
+  CircularProgress,
   IconButton,
   InputAdornment,
+  LinearProgress,
   Menu,
   MenuItem,
   Paper,
   Select,
+  Snackbar,
   Toolbar,
   Tooltip,
   Typography,
@@ -18,6 +21,7 @@ import {
 import FileUploadOutlined from "@mui/icons-material/FileUploadOutlined";
 import LanguageOutlined from "@mui/icons-material/LanguageOutlined";
 import PictureAsPdfOutlined from "@mui/icons-material/PictureAsPdfOutlined";
+import InfoOutlined from "@mui/icons-material/InfoOutlined";
 import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import {
   buildDocumentFromImportedText,
@@ -37,10 +41,12 @@ import { logTranslation } from "@core/observability";
 import { normalizeDocumentMeta } from "@core/documentMeta";
 import { INDIAN_TARGET_LANGUAGE_OPTIONS, labelForTargetLang } from "@core/indianLanguages";
 import { buildPdfExportPayload, type PdfExportVariant } from "@core/pdfExport";
+import { getAppInfo, getBundledAppVersion, getBundledProductName } from "@core/appMeta";
 import { collectVisibleBlockIds, isLazyTranslationDocument } from "@core/lazyTranslation";
 import { targetScriptClassForLang } from "@core/targetLangFonts";
 import { selectMenuProps } from "../ui/selectMenuProps";
 import { TOOLBAR_CONTROL_HEIGHT_PX, toolbarIconButtonSx } from "../ui/toolbarChrome";
+import AboutDialog from "./AboutDialog";
 import DesktopTitleBar from "./DesktopTitleBar";
 import LlmConfigModal from "./LlmConfigModal";
 
@@ -88,6 +94,12 @@ function clampScrollTop(el: HTMLElement): void {
   if (el.scrollTop > max) el.scrollTop = max;
 }
 
+function fileBasename(filePath: string): string {
+  const s = filePath.replace(/\\/g, "/");
+  const i = s.lastIndexOf("/");
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
 function indexDocBlockArticles(root: HTMLElement): Map<string, HTMLElement> {
   const m = new Map<string, HTMLElement>();
   for (const el of root.querySelectorAll<HTMLElement>("article.doc-block")) {
@@ -131,7 +143,18 @@ export default function TranslationEditor() {
   const [doc, setDoc] = useState<DocumentRoot>(() => createInitialDocument());
   const [offline, setOffline] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [appInfo, setAppInfo] = useState(() => ({
+    name: getBundledProductName(),
+    version: getBundledAppVersion(),
+  }));
   const [exportMenuAnchor, setExportMenuAnchor] = useState<null | HTMLElement>(null);
+  const [exportPdfBusy, setExportPdfBusy] = useState(false);
+  const [pdfSnackbar, setPdfSnackbar] = useState<{
+    open: boolean;
+    message: string;
+    severity: "success" | "error";
+  }>({ open: false, message: "", severity: "success" });
   const docRef = useRef(doc);
   docRef.current = doc;
   const cacheRef = useRef(new LruTranslationCache(256));
@@ -145,6 +168,21 @@ export default function TranslationEditor() {
   const scheduleForwardRef = useRef<(blockId: string) => void>(() => {});
   const childIdsKey = doc.children.map((b) => b.id).join(",");
   const isLazyDoc = isLazyTranslationDocument(doc.children.length);
+
+  const inFlightTranslationUnits = useMemo(() => {
+    const langs = doc.meta.targetLangs;
+    let n = 0;
+    for (const b of doc.children) {
+      for (const lang of langs) {
+        if (getLocaleSlice(b, lang).translationMeta.state === "translating") n += 1;
+      }
+    }
+    return n;
+  }, [doc]);
+
+  useEffect(() => {
+    void getAppInfo().then(setAppInfo);
+  }, []);
 
   const cancelForwardDebounce = useCallback((blockId: string) => {
     const t = debounceFwd.current.get(blockId);
@@ -429,10 +467,24 @@ export default function TranslationEditor() {
       return;
     }
     const payload = buildPdfExportPayload(docRef.current, variant);
-    const res = await api(payload);
-    if ("cancelled" in res && res.cancelled) return;
-    if ("ok" in res && res.ok === false) {
-      window.alert(res.error);
+    setExportPdfBusy(true);
+    try {
+      const res = await api(payload);
+      if ("cancelled" in res && res.cancelled) return;
+      if ("ok" in res && res.ok === false) {
+        setPdfSnackbar({ open: true, message: res.error, severity: "error" });
+        return;
+      }
+      if ("ok" in res && res.ok === true) {
+        const name = fileBasename(res.filePath);
+        setPdfSnackbar({
+          open: true,
+          message: `PDF saved successfully: ${name}`,
+          severity: "success",
+        });
+      }
+    } finally {
+      setExportPdfBusy(false);
     }
   }, []);
 
@@ -596,25 +648,33 @@ export default function TranslationEditor() {
               </IconButton>
             </Tooltip>
             <>
-              <Tooltip title="Export PDF">
-                <IconButton
-                  id="toolbar-export-pdf"
-                  size="small"
-                  color="primary"
-                  aria-controls={exportMenuAnchor ? "toolbar-export-pdf-menu" : undefined}
-                  aria-expanded={exportMenuAnchor ? true : undefined}
-                  aria-haspopup="true"
-                  aria-label="Export as PDF"
-                  onClick={openExportPdfMenu}
-                  sx={{
-                    ...toolbarIconButtonSx,
-                    border: 1,
-                    borderColor: "divider",
-                    bgcolor: "background.paper",
-                  }}
-                >
-                  <PictureAsPdfOutlined fontSize="small" />
-                </IconButton>
+              <Tooltip title={exportPdfBusy ? "Exporting PDF…" : "Export PDF"}>
+                <span>
+                  <IconButton
+                    id="toolbar-export-pdf"
+                    size="small"
+                    color="primary"
+                    disabled={exportPdfBusy}
+                    aria-busy={exportPdfBusy}
+                    aria-controls={exportMenuAnchor ? "toolbar-export-pdf-menu" : undefined}
+                    aria-expanded={exportMenuAnchor ? true : undefined}
+                    aria-haspopup="true"
+                    aria-label="Export as PDF"
+                    onClick={openExportPdfMenu}
+                    sx={{
+                      ...toolbarIconButtonSx,
+                      border: 1,
+                      borderColor: "divider",
+                      bgcolor: "background.paper",
+                    }}
+                  >
+                    {exportPdfBusy ? (
+                      <CircularProgress color="inherit" size={18} thickness={5} aria-hidden />
+                    ) : (
+                      <PictureAsPdfOutlined fontSize="small" />
+                    )}
+                  </IconButton>
+                </span>
               </Tooltip>
               <Menu
                 id="toolbar-export-pdf-menu"
@@ -651,6 +711,22 @@ export default function TranslationEditor() {
                 }}
               >
                 <SettingsOutlined fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="About">
+              <IconButton
+                id="toolbar-open-about"
+                size="small"
+                onClick={() => setAboutOpen(true)}
+                aria-label="About Translator"
+                sx={{
+                  ...toolbarIconButtonSx,
+                  border: 1,
+                  borderColor: "divider",
+                  bgcolor: "background.paper",
+                }}
+              >
+                <InfoOutlined fontSize="small" />
               </IconButton>
             </Tooltip>
             <Box
@@ -728,6 +804,15 @@ export default function TranslationEditor() {
         </Toolbar>
       </AppBar>
 
+      {inFlightTranslationUnits > 0 && (
+        <LinearProgress
+          id="translation-in-flight-progress"
+          variant="indeterminate"
+          aria-label={`Translation in progress, ${inFlightTranslationUnits} active`}
+          sx={{ flexShrink: 0, height: 3 }}
+        />
+      )}
+
       <Box
         id="translation-editor-body"
         component="main"
@@ -749,6 +834,22 @@ export default function TranslationEditor() {
           Source updates as you type. Translation runs automatically <strong>{DEBOUNCE_MS / 1000}s</strong> after you stop
           editing a paragraph (non-empty text only).
         </Typography>
+
+        {inFlightTranslationUnits > 0 && (
+          <Alert
+            id="translation-in-flight-banner"
+            severity="info"
+            role="status"
+            aria-live="polite"
+            icon={<CircularProgress size={18} thickness={5} aria-hidden />}
+            sx={{ mb: 2, alignItems: "center" }}
+          >
+            <Typography variant="body2" component="span">
+              Translation in progress
+              {inFlightTranslationUnits > 1 ? ` (${inFlightTranslationUnits} active requests)` : ""}…
+            </Typography>
+          </Alert>
+        )}
 
         {isLazyDoc && (
           <Alert id="lazy-translation-banner" severity="info" sx={{ mb: 2 }}>
@@ -931,11 +1032,37 @@ export default function TranslationEditor() {
         }}
       >
         <Typography id="app-copyright-text" variant="caption" color="text.secondary" component="p" sx={{ m: 0 }}>
-          © {new Date().getFullYear()} Biplab Sarkar. All rights reserved.
+          © {new Date().getFullYear()} Biplab Sarkar. All rights reserved. · v{appInfo.version}
         </Typography>
       </Box>
 
+      <AboutDialog
+        open={aboutOpen}
+        onClose={() => setAboutOpen(false)}
+        appName={appInfo.name}
+        version={appInfo.version}
+      />
       <LlmConfigModal open={configOpen} onClose={() => setConfigOpen(false)} />
+
+      <Snackbar
+        open={pdfSnackbar.open}
+        autoHideDuration={8000}
+        onClose={(_, reason) => {
+          if (reason === "clickaway") return;
+          setPdfSnackbar((s) => ({ ...s, open: false }));
+        }}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          severity={pdfSnackbar.severity}
+          variant="filled"
+          onClose={() => setPdfSnackbar((s) => ({ ...s, open: false }))}
+          elevation={6}
+          sx={{ width: "100%", maxWidth: 560 }}
+        >
+          {pdfSnackbar.message}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }

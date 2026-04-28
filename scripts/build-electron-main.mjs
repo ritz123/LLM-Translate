@@ -22,7 +22,7 @@ const opts = {
   // Bundling them into ESM makes esbuild's `require` shim throw "Dynamic require of fs is not supported".
   external: ["electron", "mammoth", "word-extractor", "pdf-parse"],
   sourcemap: true,
-  logLevel: "info",
+  logLevel: "warning",
 };
 
 async function run() {
@@ -32,7 +32,6 @@ async function run() {
     console.error("[esbuild] watching electron main → dist-electron/main.mjs");
   } else {
     await esbuild.build(opts);
-    console.error("[esbuild] wrote dist-electron/main.mjs");
   }
 }
 

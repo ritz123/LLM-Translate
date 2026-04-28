@@ -10,11 +10,25 @@
     "build:electron-main": "node scripts/build-electron-main.mjs",
     "dev": "npm run build:electron-main && concurrently -k \"node scripts/build-electron-main.mjs --watch\" \"vite\" \"wait-on tcp:5173 file:dist-electron/main.mjs && cross-env ELECTRON_DEV=1 electronmon .\"",
     "build": "tsc -b && vite build && npm run build:electron-main",
-    "desktop": "npm run build && electron ."
+    "desktop": "npm run build -s && node scripts/electron-quiet.mjs .",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "dist:win": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
+    "@fontsource/noto-sans": "^5.2.10",
+    "@fontsource/noto-sans-arabic": "^5.2.10",
+    "@fontsource/noto-sans-bengali": "^5.2.11",
+    "@fontsource/noto-sans-gujarati": "^5.2.7",
+    "@fontsource/noto-sans-gurmukhi": "^5.2.9",
+    "@fontsource/noto-sans-kannada": "^5.2.9",
+    "@fontsource/noto-sans-malayalam": "^5.2.8",
+    "@fontsource/noto-sans-oriya": "^5.2.9",
+    "@fontsource/noto-sans-tamil": "^5.2.7",
+    "@fontsource/noto-sans-telugu": "^5.2.8",
     "@mui/icons-material": "^9.0.0",
     "@mui/material": "^9.0.0",
     "mammoth": "^1.12.0",
@@ -31,11 +45,75 @@
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
     "electron": "^34.2.0",
+    "electron-builder": "^25.1.8",
     "electronmon": "^2.0.3",
     "esbuild": "^0.25.0",
     "tsx": "^4.19.3",
     "typescript": "~5.7.3",
     "vite": "^6.1.0",
     "wait-on": "^8.0.1"
+  },
+  "author": "Biplab Sarkar",
+  "description": "Desktop translator editor (Electron + React + LLM backends)",
+  "homepage": "https://github.com/ritz123/LLM-Translate#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ritz123/LLM-Translate.git"
+  },
+  "build": {
+    "appId": "io.github.ritz123.llm-translate",
+    "productName": "Translator",
+    "copyright": "Copyright © Biplab Sarkar",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "electron/preload.cjs",
+      "electron/splash.html",
+      "node_modules/@fontsource/noto-sans/files/*.woff2",
+      "node_modules/@fontsource/noto-sans/unicode.json",
+      "node_modules/@fontsource/noto-sans-arabic/files/*.woff2",
+      "node_modules/@fontsource/noto-sans-arabic/unicode.json",
+      "node_modules/@fontsource/noto-sans-bengali/files/*.woff2",
+      "node_modules/@fontsource/noto-sans-bengali/unicode.json",
+      "node_modules/@fontsource/noto-sans-gujarati/files/*.woff2",
+      "node_modules/@fontsource/noto-sans-gujarati/unicode.json",
+      "node_modules/@fontsource/noto-sans-gurmukhi/files/*.woff2",
+      "node_modules/@fontsource/noto-sans-gurmukhi/unicode.json",
+      "node_modules/@fontsource/noto-sans-kannada/files/*.woff2",
+      "node_modules/@fontsource/noto-sans-kannada/unicode.json",
+      "node_modules/@fontsource/noto-sans-malayalam/files/*.woff2",
+      "node_modules/@fontsource/noto-sans-malayalam/unicode.json",
+      "node_modules/@fontsource/noto-sans-oriya/files/*.woff2",
+      "node_modules/@fontsource/noto-sans-oriya/unicode.json",
+      "node_modules/@fontsource/noto-sans-tamil/files/*.woff2",
+      "node_modules/@fontsource/noto-sans-tamil/unicode.json",
+      "node_modules/@fontsource/noto-sans-telugu/files/*.woff2",
+      "node_modules/@fontsource/noto-sans-telugu/unicode.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ],
+      "category": "Office"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

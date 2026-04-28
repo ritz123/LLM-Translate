@@ -1,5 +1,5 @@
 ---
-description: Desktop UI—Electron without extra UI server, frameless window, 5s splash, Material + React, stable ids, modular code.
+description: Desktop UI—Electron without extra UI server, frameless window, 5s splash (with version), Material + React, stable ids, About, footer/copyright, modular code.
 globs: "electron/**/*,src/**/*.{tsx,css}"
 alwaysApply: true
 ---
@@ -22,6 +22,7 @@ Apply in every session (`alwaysApply: true`). Primary scope: Electron shell, pre
 ## 3. Startup splash (5 seconds)
 
 - Show a **dedicated splash window or splash route** on launch with clear branding and a polished (e.g. subtle shimmer or progress) treatment.
+- Show the **software version** on the splash (same value as in About; see section 8) so it matches release metadata.
 - Keep the splash **visible for 5 seconds** before revealing the main window/route, unless startup hard-fails—in that case, show an error state **on or after** the splash so users are not left on a blank shell.
 - Transition smoothly to the main UI (fade or cross-fade).
 
@@ -55,10 +56,23 @@ Apply in every session (`alwaysApply: true`). Primary scope: Electron shell, pre
 - **Renderer**: group by feature (`components/`, `core/`) with **colocated types/helpers**; avoid mega-files; extract hooks and presentational components.
 - **IPC**: define channel names and payload types in a **shared module** imported by preload and main (or duplicated types with a single source of truth) to avoid string drift.
 
+## 8. About button and software version
+
+- Provide an **About** affordance (e.g. toolbar icon or menu entry) that opens a clear **About** surface (dialog or dedicated panel).
+- The **About** section must show the **software version** (same value as `package.json` / build metadata—surface it via a single source of truth such as IPC reading app version or a Vite-injected constant).
+- The **splash screen** must also display that **same software version** (e.g. under the product name or tagline) so users see it at every cold start.
+
+## 9. Footer and copyright
+
+- The main app layout must include a **footer** region (persistent strip at the bottom of the primary window, not obscured by scroll-only content).
+- The footer must show a **copyright message** (author or legal entity and year range as appropriate for the product). Keep wording consistent with About where applicable.
+
 ## Self-check before finishing a change
 
 - [ ] No extra desktop HTTP server unless justified.
 - [ ] Primary window remains frameless per product direction.
-- [ ] Splash shows for **5 seconds** before main UI unless overridden by a documented error path.
-- [ ] New or touched interactive UI has **stable `id`s**.
+- [ ] Splash shows for **5 seconds** before main UI unless overridden by a documented error path; splash shows **version**.
+- [ ] **About** is reachable; **About** shows **version**.
+- [ ] **Footer** present with **copyright** message.
+- [ ] New or touched interactive UI has **stable `id`s** (include About control and footer landmarks).
 - [ ] New UI uses **Material**-aligned components/tokens.
