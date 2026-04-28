@@ -29,6 +29,13 @@ export interface TranslationMeta {
   lastError?: string;
 }
 
+/** Per-locale target mirror + meta (forward / user edit state). */
+export interface BlockTargetLocaleSlice {
+  targetInline?: InlineTextNode[];
+  translationMeta: TranslationMeta;
+  targetProvenance?: "machine" | "user";
+}
+
 /** Section 3 + 4.1: optional Hindi runs mirror; provenance for UX. */
 export interface Block {
   id: string;
@@ -42,12 +49,17 @@ export interface Block {
   /** Monotonic stamp for stale supersede (Section 4.1, Section 8). */
   contentEpoch?: number;
   targetProvenance?: "machine" | "user";
+  /** When set, preferred over root-level target fields for the keyed locales. */
+  targetsByLang?: Record<string, BlockTargetLocaleSlice>;
 }
 
 export interface DocumentMeta {
   title: string;
   sourceLang: string;
-  targetLang: string;
+  /** Locales to translate into (e.g. several Indian languages at once). */
+  targetLangs: string[];
+  /** Right pane and reverse-sync use this locale’s stored surface. */
+  activeTargetLang: string;
 }
 
 export interface DocumentRoot {

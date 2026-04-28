@@ -6,8 +6,12 @@ export interface TranslationLogFields {
   event: string;
   blockId?: string;
   sourceHash?: string | null;
+  /** For hash-mismatch diagnostics */
+  curSourceHash?: string | null;
+  resSourceHash?: string | null;
   decision?: string;
   gate?: string;
+  forced?: boolean;
   cacheHit?: boolean;
   latencyMs?: number;
   error?: string;

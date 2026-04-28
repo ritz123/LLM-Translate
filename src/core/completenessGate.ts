@@ -3,7 +3,7 @@ import { canonicalPlainText } from "./canonical";
 
 export type GateDecision = "translate" | "wait";
 
-/** Jaccard on word sets — cheap stand-in for “still polishing” (Section 6 Stage B). */
+/** Jaccard on word sets — optional Stage B signal. */
 export function tokenJaccardSimilarity(a: string, b: string): number {
   const ta = new Set(a.toLowerCase().split(/\s+/).filter(Boolean));
   const tb = new Set(b.toLowerCase().split(/\s+/).filter(Boolean));
@@ -16,19 +16,24 @@ export function tokenJaccardSimilarity(a: string, b: string): number {
   return union === 0 ? 0 : inter / union;
 }
 
-/** Section 6 Stage A — local heuristics. */
+/**
+ * Section 6 Stage A — tuned for desktop UX so translation actually fires.
+ * - At least 2 words
+ * - Looks “finished”: terminal punctuation, OR long enough line (wrapped paragraph), or heading/list
+ */
 export function completenessGateStageA(block: Block): GateDecision {
   const text = canonicalPlainText(block).trim();
   if (text.length === 0) return "wait";
 
   const tokens = text.split(/\s+/).filter(Boolean);
-  if (tokens.length < 3) return "wait";
+  if (tokens.length < 2) return "wait";
 
   const last = text.slice(-1);
   const terminal = /^[.!?।|]$/u.test(last);
   const isHeading = block.type === "heading";
   const isListItem = block.type === "list_item";
-  if (!terminal && !isHeading && !isListItem) return "wait";
+  const longLine = text.length >= 28;
+  if (!terminal && !isHeading && !isListItem && !longLine) return "wait";
 
   const openConnective = /(\b(and|but|or)\s*,?\s*)$|[,:;\-–—]\s*$/i;
   if (openConnective.test(text)) return "wait";
@@ -48,16 +53,12 @@ export function completenessGateStageA(block: Block): GateDecision {
 }
 
 /**
- * Stage B — when Stage A passes, delay if text barely changed vs previous (embedding-like heuristic).
- * Section 6: high similarity ⇒ still polishing ⇒ wait.
+ * Stage B — disabled in default gate: it blocked re-translation after small edits
+ * (high Jaccard vs last gated snapshot). Re-enable when embedding-based ambiguity is wired.
  */
 export function completenessGateStageB(current: Block, previous: Block | null): GateDecision {
-  if (!previous) return "translate";
-  const cur = canonicalPlainText(current).trim();
-  const prev = canonicalPlainText(previous).trim();
-  if (prev.length === 0) return "translate";
-  const sim = tokenJaccardSimilarity(cur, prev);
-  if (sim >= 0.88) return "wait";
+  void current;
+  void previous;
   return "translate";
 }
 

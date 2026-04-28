@@ -1,33 +1,38 @@
 import { useCallback, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
-  addParagraphAfter,
-  applyReverseEnglishToBlock,
+  buildDocumentFromImportedText,
   createInitialDocument,
   getBlock,
-  mergeBlockWithPrevious,
-  removeBlock,
+  normalizeDocumentRoot,
   setBlockMachineTranslation,
   setBlockPlainText,
-  setBlockTargetPlainText,
   setBlockTranslationMeta,
 } from "@core/documentModel";
-import type { Block, DocumentRoot, TranslateRequest } from "@core/types";
-import { canonicalPlainText, canonicalTargetPlainText } from "@core/canonical";
-import { computeReverseHash, computeSourceHash } from "@core/sourceHash";
-import { createDefaultCompletenessGate } from "@core/completenessGate";
+import type { DocumentRoot } from "@core/types";
+import { canonicalPlainText, canonicalTargetPlainText, getLocaleSlice } from "@core/canonical";
+import { computeSourceHash } from "@core/sourceHash";
 import { LruTranslationCache } from "@core/translationCache";
-import { translateBatch, translateOne } from "@core/translationFetch";
+import { translateOne } from "@core/translationFetch";
 import { logTranslation } from "@core/observability";
+import { normalizeDocumentMeta } from "@core/documentMeta";
+import { INDIAN_TARGET_LANGUAGE_OPTIONS, labelForTargetLang } from "@core/indianLanguages";
+import { targetScriptClassForLang } from "@core/targetLangFonts";
+import LlmConfigModal from "./LlmConfigModal";
 
 const BASE = "";
 const DEBOUNCE_MS = 2000;
 
-function pseudoBlockForHindiGate(block: Block, hindiPlain: string): Block {
-  return {
-    ...block,
-    type: "paragraph",
-    inline: [{ kind: "text", text: hindiPlain, styles: [] }],
-  };
+const fwdAbortKey = (blockId: string, lang: string) => `${blockId}::${lang}`;
+
+function abortAllForwardForBlock(map: Map<string, AbortController>, blockId: string): void {
+  const prefix = `${blockId}::`;
+  for (const key of [...map.keys()]) {
+    if (key.startsWith(prefix)) {
+      map.get(key)?.abort();
+      map.delete(key);
+    }
+  }
 }
 
 function anchorBlockId(container: HTMLElement, scrollTop: number): string | null {
@@ -49,21 +54,17 @@ function scrollPaneToBlock(container: HTMLElement, blockId: string): void {
 
 export default function TranslationEditor() {
   const [doc, setDoc] = useState<DocumentRoot>(() => createInitialDocument());
-  const [editableHindi, setEditableHindi] = useState(false);
   const [offline, setOffline] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
   const docRef = useRef(doc);
   docRef.current = doc;
   const cacheRef = useRef(new LruTranslationCache(256));
-  const gateRef = useRef(createDefaultCompletenessGate());
-  const prevSourceRef = useRef(new Map<string, Block>());
-  const prevTargetRef = useRef(new Map<string, Block>());
   const debounceFwd = useRef(new Map<string, number>());
-  const debounceRev = useRef(new Map<string, number>());
   const abortFwd = useRef(new Map<string, AbortController>());
-  const abortRev = useRef(new Map<string, AbortController>());
   const srcScrollRef = useRef<HTMLDivElement>(null);
   const tgtScrollRef = useRef<HTMLDivElement>(null);
   const syncingScroll = useRef(false);
+  const forwardSentPlainRef = useRef(new Map<string, string>());
 
   const cancelForwardDebounce = useCallback((blockId: string) => {
     const t = debounceFwd.current.get(blockId);
@@ -71,58 +72,64 @@ export default function TranslationEditor() {
     debounceFwd.current.delete(blockId);
   }, []);
 
-  const cancelReverseDebounce = useCallback((blockId: string) => {
-    const t = debounceRev.current.get(blockId);
-    if (t !== undefined) clearTimeout(t);
-    debounceRev.current.delete(blockId);
-  }, []);
-
-  const cancelAllForRemoved = useCallback((ids: string[]) => {
-    for (const id of ids) {
-      cancelForwardDebounce(id);
-      cancelReverseDebounce(id);
-      abortFwd.current.get(id)?.abort();
-      abortFwd.current.delete(id);
-      abortRev.current.get(id)?.abort();
-      abortRev.current.delete(id);
-      prevSourceRef.current.delete(id);
-      prevTargetRef.current.delete(id);
-    }
-  }, [cancelForwardDebounce, cancelReverseDebounce]);
-
   const runForward = useCallback(
     async (blockId: string) => {
       const d = docRef.current;
       const block = getBlock(d, blockId);
       if (!block) return;
-      abortRev.current.get(blockId)?.abort();
-      const prev = prevSourceRef.current.get(blockId) ?? null;
-      const gate = gateRef.current.shouldTranslate(block, prev);
+      const plain = canonicalPlainText(block).trim();
+      if (!plain) return;
+      cancelForwardDebounce(blockId);
+      abortAllForwardForBlock(abortFwd.current, blockId);
       logTranslation("info", {
-        event: "gate_forward",
+        event: "forward_run",
         blockId,
-        gate,
         direction: "forward",
+        gate: "timer",
       });
-      if (gate === "wait") return;
-      prevSourceRef.current.set(blockId, { ...block, inline: block.inline.map((n) => ({ ...n })) });
-      const hash = await computeSourceHash(block, d.meta);
-      const cached = cacheRef.current.get(hash);
-      if (cached !== null) {
-        setDoc((x) => setBlockMachineTranslation(x, blockId, cached, hash));
-        logTranslation("info", {
-          event: "cache_hit_client",
-          blockId,
-          sourceHash: hash,
-          cacheHit: true,
-          direction: "forward",
-        });
-        return;
+
+      const langs = d.meta.targetLangs;
+      const cachedApply: { lang: string; hash: string; text: string }[] = [];
+      const todo: { lang: string; hash: string }[] = [];
+      for (const lang of langs) {
+        const hash = await computeSourceHash(block, d.meta, lang);
+        const cached = cacheRef.current.get(hash);
+        if (cached !== null) {
+          cachedApply.push({ lang, hash, text: cached });
+        } else {
+          todo.push({ lang, hash });
+        }
       }
-      abortFwd.current.get(blockId)?.abort();
-      const ac = new AbortController();
-      abortFwd.current.set(blockId, ac);
-      setDoc((x) => setBlockTranslationMeta(x, blockId, { state: "translating", lastError: undefined }));
+      if (cachedApply.length > 0) {
+        setDoc((x) => {
+          let n = x;
+          for (const row of cachedApply) {
+            n = setBlockMachineTranslation(n, blockId, row.text, row.hash, row.lang);
+          }
+          return n;
+        });
+        for (const row of cachedApply) {
+          logTranslation("info", {
+            event: "cache_hit_client",
+            blockId,
+            sourceHash: row.hash,
+            cacheHit: true,
+            direction: "forward",
+            gate: row.lang,
+          });
+        }
+      }
+      if (todo.length === 0) return;
+
+      setDoc((x) => {
+        let n = x;
+        for (const { lang } of todo) {
+          n = setBlockTranslationMeta(n, blockId, { state: "translating", lastError: undefined }, lang);
+        }
+        return n;
+      });
+      const sentPlain = canonicalPlainText(block).trim();
+      forwardSentPlainRef.current.set(blockId, sentPlain);
       const idx = d.children.findIndex((b) => b.id === blockId);
       const prevText =
         idx > 0 ? canonicalPlainText(d.children[idx - 1]!) : undefined;
@@ -130,52 +137,82 @@ export default function TranslationEditor() {
         idx >= 0 && idx < d.children.length - 1
           ? canonicalPlainText(d.children[idx + 1]!)
           : undefined;
+
       try {
-        const res = await translateOne(
-          BASE,
-          {
-            blockId,
-            sourceLang: d.meta.sourceLang,
-            targetLang: d.meta.targetLang,
-            text: canonicalPlainText(block),
-            sourceHash: hash,
-            blockType: block.type,
-            context: { previousBlockText: prevText, nextBlockText: nextText },
-          },
-          ac.signal,
-        );
-        if (ac.signal.aborted) return;
-        const d2 = docRef.current;
-        const b2 = getBlock(d2, blockId);
-        if (!b2) return;
-        const curHash = await computeSourceHash(b2, d2.meta);
-        if (curHash !== res.sourceHash) {
-          logTranslation("warn", {
-            event: "stale_drop_forward",
-            blockId,
-            sourceHash: res.sourceHash,
-            direction: "forward",
-          });
-          setDoc((x) => setBlockTranslationMeta(x, blockId, { state: "stale" }));
-          return;
-        }
-        cacheRef.current.set(hash, res.translation);
-        setDoc((x) => setBlockMachineTranslation(x, blockId, res.translation, hash));
-      } catch (e) {
-        if (ac.signal.aborted) return;
-        if (e instanceof DOMException && e.name === "AbortError") return;
-        setOffline(true);
-        setDoc((x) =>
-          setBlockTranslationMeta(x, blockId, {
-            state: "error",
-            lastError: e instanceof Error ? e.message : String(e),
+        await Promise.all(
+          todo.map(async ({ lang, hash }) => {
+            const ac = new AbortController();
+            abortFwd.current.set(fwdAbortKey(blockId, lang), ac);
+            try {
+              const res = await translateOne(
+                BASE,
+                {
+                  blockId,
+                  sourceLang: d.meta.sourceLang,
+                  targetLang: lang,
+                  text: canonicalPlainText(block),
+                  sourceHash: hash,
+                  blockType: block.type,
+                  context: { previousBlockText: prevText, nextBlockText: nextText },
+                },
+                ac.signal,
+              );
+              if (ac.signal.aborted) return;
+              const d2 = docRef.current;
+              const b2 = getBlock(d2, blockId);
+              if (!b2) return;
+              const curHash = await computeSourceHash(b2, d2.meta, lang);
+              const nowPlain = canonicalPlainText(b2).trim();
+              const textUnchanged = forwardSentPlainRef.current.get(blockId) === nowPlain;
+              const hashOk = curHash === res.sourceHash;
+              if (!hashOk && !textUnchanged) {
+                logTranslation("warn", {
+                  event: "stale_drop_forward",
+                  blockId,
+                  sourceHash: res.sourceHash,
+                  direction: "forward",
+                  gate: lang,
+                });
+                setDoc((x) => setBlockTranslationMeta(x, blockId, { state: "stale" }, lang));
+                return;
+              }
+              if (!hashOk && textUnchanged) {
+                logTranslation("warn", {
+                  event: "forward_apply_despite_hash_mismatch",
+                  blockId,
+                  curSourceHash: curHash,
+                  resSourceHash: res.sourceHash,
+                  direction: "forward",
+                  gate: lang,
+                });
+              }
+              cacheRef.current.set(curHash, res.translation);
+              setDoc((x) => setBlockMachineTranslation(x, blockId, res.translation, curHash, lang));
+            } catch (e) {
+              if (ac.signal.aborted) return;
+              if (e instanceof DOMException && e.name === "AbortError") return;
+              setOffline(true);
+              setDoc((x) =>
+                setBlockTranslationMeta(
+                  x,
+                  blockId,
+                  {
+                    state: "error",
+                    lastError: e instanceof Error ? e.message : String(e),
+                  },
+                  lang,
+                ),
+              );
+            } finally {
+              abortFwd.current.delete(fwdAbortKey(blockId, lang));
+            }
           }),
         );
       } finally {
-        abortFwd.current.delete(blockId);
+        forwardSentPlainRef.current.delete(blockId);
       }
     },
-    [],
+    [cancelForwardDebounce],
   );
 
   const scheduleForward = useCallback(
@@ -192,190 +229,87 @@ export default function TranslationEditor() {
     [cancelForwardDebounce, runForward],
   );
 
-  const runReverse = useCallback(async (blockId: string) => {
-    const d = docRef.current;
-    const block = getBlock(d, blockId);
-    if (!block) return;
-    abortFwd.current.get(blockId)?.abort();
-    const hi = canonicalTargetPlainText(block).trim();
-    if (!hi) return;
-    const pseudo = pseudoBlockForHindiGate(block, hi);
-    const prevHi = prevTargetRef.current.get(blockId) ?? null;
-    const gate = gateRef.current.shouldTranslate(pseudo, prevHi);
-    logTranslation("info", {
-      event: "gate_reverse",
-      blockId,
-      gate,
-      direction: "reverse",
-    });
-    if (gate === "wait") return;
-    prevTargetRef.current.set(blockId, { ...pseudo, inline: pseudo.inline.map((n) => ({ ...n })) });
-    const hash = await computeReverseHash(block, d.meta, hi);
-    const cached = cacheRef.current.get(hash);
-    if (cached !== null) {
-      const synthetic: Block = {
-        ...block,
-        inline: [{ kind: "text", text: cached, styles: [] }],
-      };
-      const srcHash = await computeSourceHash(synthetic, d.meta);
-      setDoc((x) => {
-        const y = applyReverseEnglishToBlock(x, blockId, cached);
-        return setBlockTranslationMeta(y, blockId, {
-          state: "done",
-          sourceHash: srcHash,
-          targetText: hi,
-          lastError: undefined,
-        });
-      });
-      return;
-    }
-    abortRev.current.get(blockId)?.abort();
-    const ac = new AbortController();
-    abortRev.current.set(blockId, ac);
-    setDoc((x) => setBlockTranslationMeta(x, blockId, { state: "translating", lastError: undefined }));
-    try {
-      const res = await translateOne(
-        BASE,
-        {
-          blockId,
-          sourceLang: d.meta.targetLang,
-          targetLang: d.meta.sourceLang,
-          text: hi,
-          sourceHash: hash,
-          blockType: block.type,
-        },
-        ac.signal,
-      );
-      if (ac.signal.aborted) return;
-      const d2 = docRef.current;
-      const b2 = getBlock(d2, blockId);
-      if (!b2) return;
-      const curRev = await computeReverseHash(b2, d2.meta, canonicalTargetPlainText(b2));
-      if (curRev !== res.sourceHash) {
-        logTranslation("warn", {
-          event: "stale_drop_reverse",
-          blockId,
-          sourceHash: res.sourceHash,
-          direction: "reverse",
-        });
-        setDoc((x) => setBlockTranslationMeta(x, blockId, { state: "stale" }));
-        return;
-      }
-      cacheRef.current.set(hash, res.translation);
-      const synthetic: Block = {
-        ...block,
-        inline: [{ kind: "text", text: res.translation, styles: [] }],
-      };
-      const srcHash = await computeSourceHash(synthetic, d2.meta);
-      setDoc((x) => {
-        const y = applyReverseEnglishToBlock(x, blockId, res.translation);
-        return setBlockTranslationMeta(y, blockId, {
-          state: "done",
-          sourceHash: srcHash,
-          targetText: hi,
-          lastError: undefined,
-        });
-      });
-    } catch (e) {
-      if (ac.signal.aborted) return;
-      if (e instanceof DOMException && e.name === "AbortError") return;
-      setOffline(true);
-      setDoc((x) =>
-        setBlockTranslationMeta(x, blockId, {
-          state: "error",
-          lastError: e instanceof Error ? e.message : String(e),
-        }),
-      );
-    } finally {
-      abortRev.current.delete(blockId);
-    }
-  }, []);
-
-  const scheduleReverse = useCallback(
-    (blockId: string) => {
-      cancelReverseDebounce(blockId);
-      debounceRev.current.set(
-        blockId,
-        window.setTimeout(() => {
-          debounceRev.current.delete(blockId);
-          void runReverse(blockId);
-        }, DEBOUNCE_MS),
-      );
-    },
-    [cancelReverseDebounce, runReverse],
-  );
-
   const onSourceChange = (blockId: string, text: string) => {
     setOffline(false);
     setDoc((d) => setBlockPlainText(d, blockId, text));
     scheduleForward(blockId);
   };
 
-  const onTargetChange = (blockId: string, text: string) => {
-    setOffline(false);
-    setDoc((d) => setBlockTargetPlainText(d, blockId, text));
-    if (editableHindi) scheduleReverse(blockId);
-  };
-
-  const onMerge = (blockId: string) => {
-    const m = mergeBlockWithPrevious(doc, blockId);
-    if (!m) return;
-    cancelAllForRemoved(m.removedIds);
-    setDoc(m.doc);
-    scheduleForward(m.newBlockId);
-  };
-
-  const onAddParagraph = (afterId: string | null) => {
-    setDoc((d) => addParagraphAfter(d, afterId));
-  };
-
-  const onRemove = (blockId: string) => {
-    cancelAllForRemoved([blockId]);
-    setDoc((d) => removeBlock(d, blockId));
-  };
-
-  const onRetry = (blockId: string) => {
-    setDoc((d) => setBlockTranslationMeta(d, blockId, { state: "idle", lastError: undefined }));
-    void runForward(blockId);
-  };
-
-  const onTranslateAllIdle = async () => {
+  const scheduleAllBlocks = useCallback(() => {
     const d = docRef.current;
-    const reqs: TranslateRequest[] = [];
+    setOffline(false);
     for (const b of d.children) {
-      const plain = canonicalPlainText(b).trim();
-      if (!plain) continue;
-      if (gateRef.current.shouldTranslate(b, prevSourceRef.current.get(b.id) ?? null) === "wait") continue;
-      const hash = await computeSourceHash(b, d.meta);
-      const hit = cacheRef.current.get(hash);
-      if (hit !== null) {
-        setDoc((x) => setBlockMachineTranslation(x, b.id, hit, hash));
-        continue;
+      cancelForwardDebounce(b.id);
+      if (!canonicalPlainText(b).trim()) continue;
+      scheduleForward(b.id);
+    }
+  }, [cancelForwardDebounce, scheduleForward]);
+
+  const flushForwardSchedulers = useCallback(() => {
+    for (const t of debounceFwd.current.values()) clearTimeout(t);
+    debounceFwd.current.clear();
+    for (const ac of abortFwd.current.values()) ac.abort();
+    abortFwd.current.clear();
+    forwardSentPlainRef.current.clear();
+  }, []);
+
+  const onImportDocument = useCallback(async () => {
+    const api = window.translatorDesktop?.importDocument;
+    if (!api) {
+      window.alert("Import is only available in the desktop app.");
+      return;
+    }
+    const res = await api();
+    if ("cancelled" in res && res.cancelled) return;
+    if ("ok" in res && res.ok === false) {
+      window.alert(res.error);
+      return;
+    }
+    if (!("ok" in res) || res.ok !== true) {
+      window.alert("Import failed.");
+      return;
+    }
+    flushForwardSchedulers();
+    cacheRef.current = new LruTranslationCache(256);
+    setOffline(false);
+    const snap = docRef.current;
+    const nextDoc = buildDocumentFromImportedText(res.plainText, res.title, {
+      sourceLang: snap.meta.sourceLang,
+      targetLangs: snap.meta.targetLangs,
+      activeTargetLang: snap.meta.activeTargetLang,
+    });
+    flushSync(() => {
+      setDoc(nextDoc);
+    });
+    for (const b of nextDoc.children) {
+      if (!canonicalPlainText(b).trim()) continue;
+      cancelForwardDebounce(b.id);
+      void runForward(b.id);
+    }
+  }, [flushForwardSchedulers, cancelForwardDebounce, runForward]);
+
+  const setTargetLanguageDropdown = useCallback(
+    (code: string) => {
+      const snap = docRef.current;
+      const meta = normalizeDocumentMeta(snap.meta);
+      if (meta.targetLangs.length === 1 && meta.targetLangs[0] === code && meta.activeTargetLang === code) {
+        return;
       }
-      reqs.push({
-        blockId: b.id,
-        sourceLang: d.meta.sourceLang,
-        targetLang: d.meta.targetLang,
-        text: plain,
-        sourceHash: hash,
-        blockType: b.type,
+      setDoc((d) => {
+        const m = normalizeDocumentMeta(d.meta);
+        return normalizeDocumentRoot({
+          ...d,
+          meta: { ...m, targetLangs: [code], activeTargetLang: code },
+        });
       });
-    }
-    if (reqs.length === 0) return;
-    try {
-      const results = await translateBatch(BASE, reqs);
-      for (const res of results) {
-        const b = getBlock(docRef.current, res.blockId);
-        if (!b) continue;
-        const cur = await computeSourceHash(b, docRef.current.meta);
-        if (cur !== res.sourceHash) continue;
-        cacheRef.current.set(res.sourceHash, res.translation);
-        setDoc((x) => setBlockMachineTranslation(x, res.blockId, res.translation, res.sourceHash));
-      }
-    } catch {
-      setOffline(true);
-    }
-  };
+      window.setTimeout(() => {
+        const d = docRef.current;
+        if (d.meta.activeTargetLang !== code || d.meta.targetLangs[0] !== code) return;
+        scheduleAllBlocks();
+      }, 0);
+    },
+    [scheduleAllBlocks],
+  );
 
   const onSrcScroll = () => {
     const src = srcScrollRef.current;
@@ -403,107 +337,117 @@ export default function TranslationEditor() {
     });
   };
 
+  const targetFontClass = targetScriptClassForLang(doc.meta.activeTargetLang);
+  const targetTextDir = doc.meta.activeTargetLang === "ur" ? "rtl" : "ltr";
+
   return (
-    <div className="translation-editor">
-      <h1>Translation editor</h1>
-      <p className="note">
-        English on the left updates instantly. After <strong>{DEBOUNCE_MS / 1000}s</strong> quiet time per block, a
-        completeness gate runs; then translation fills the Hindi column (Section 5–7). Toggle editable Hindi for
-        reverse sync (Section 4.1 MVP).
+    <div className="translation-editor translation-editor-v2">
+      <header className="app-header">
+        <h1 className="app-title">Translator</h1>
+        <div className="app-header-actions">
+          <button type="button" className="btn-config" onClick={() => void onImportDocument()}>
+            Import document…
+          </button>
+          <button type="button" className="btn-config" onClick={() => setConfigOpen(true)}>
+            Configuration
+          </button>
+          <fieldset className="lang-targets-inline">
+            <label htmlFor="target-lang-select" className="sr-only">
+              Target language
+            </label>
+            <select
+              id="target-lang-select"
+              className={`target-lang-font ${targetFontClass}`}
+              aria-label="Target language"
+              dir={targetTextDir}
+              value={doc.meta.activeTargetLang}
+              onChange={(e) => setTargetLanguageDropdown(e.target.value)}
+            >
+              {!INDIAN_TARGET_LANGUAGE_OPTIONS.some((o) => o.code === doc.meta.activeTargetLang) && (
+                <option value={doc.meta.activeTargetLang}>
+                  {labelForTargetLang(doc.meta.activeTargetLang)} ({doc.meta.activeTargetLang})
+                </option>
+              )}
+              {INDIAN_TARGET_LANGUAGE_OPTIONS.map((o) => (
+                <option key={o.code} value={o.code}>
+                  {o.label} ({o.code})
+                </option>
+              ))}
+            </select>
+          </fieldset>
+        </div>
+      </header>
+
+      <p className="app-subline">
+        Source updates as you type. Translation runs automatically <strong>{DEBOUNCE_MS / 1000}s</strong> after you stop
+        editing a paragraph (non-empty text only).
       </p>
+
       {offline && (
         <div className="offline-banner" role="status">
-          Network or server error — source editing still works. Last Hindi is shown where available.
+          Translation failed — use <strong>Configuration</strong> to set the LLM provider and keys, then edit again to
+          retry after {DEBOUNCE_MS / 1000}s, or change a character to re-schedule.
         </div>
       )}
-      <div className="toolbar">
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={editableHindi}
-            onChange={(e) => setEditableHindi(e.target.checked)}
-          />
-          Editable Hindi (reverse EN sync)
-        </label>
-        <button type="button" onClick={() => void onTranslateAllIdle()}>
-          Batch translate ready blocks
-        </button>
-        <button type="button" onClick={() => onAddParagraph(doc.children[doc.children.length - 1]?.id ?? null)}>
-          Add paragraph
-        </button>
-      </div>
-      <div className="panes">
-        <div className="pane">
-          <div className="grid-head">English</div>
-          <div ref={srcScrollRef} className="pane-scroll" onScroll={onSrcScroll}>
+
+      <div className="panes panes-v2">
+        <section className="pane pane-source doc-prose" aria-label="Source text">
+          <div className="pane-label">Source</div>
+          <div ref={srcScrollRef} className="pane-scroll pane-scroll-source" onScroll={onSrcScroll}>
             {doc.children.map((b, i) => (
-              <div key={b.id} className="block-wrap" data-block-id={b.id}>
+              <article key={b.id} className="doc-block" data-block-id={b.id}>
                 <textarea
-                  aria-label={`English block ${i + 1}`}
+                  className="source-doc-input"
+                  aria-label={`Source paragraph ${i + 1}`}
                   value={canonicalPlainText(b)}
                   onChange={(e) => onSourceChange(b.id, e.target.value)}
+                  spellCheck
                 />
-                <div className="row-actions">
-                  {i > 0 && (
-                    <button type="button" onClick={() => onMerge(b.id)}>
-                      Merge with previous
-                    </button>
-                  )}
-                  <button type="button" onClick={() => onAddParagraph(b.id)}>
-                    Add after
-                  </button>
-                  {doc.children.length > 1 && (
-                    <button type="button" onClick={() => onRemove(b.id)}>
-                      Remove
-                    </button>
-                  )}
-                </div>
-              </div>
+              </article>
             ))}
           </div>
-        </div>
-        <div className="pane">
-          <div className="grid-head">Hindi</div>
-          <div ref={tgtScrollRef} className="pane-scroll" onScroll={onTgtScroll}>
+        </section>
+        <section
+          className={`pane pane-target doc-prose pane-target-pane ${targetFontClass}`}
+          aria-label="Translation"
+          lang={doc.meta.activeTargetLang}
+        >
+          <div className="pane-label">{labelForTargetLang(doc.meta.activeTargetLang)}</div>
+          <div
+            ref={tgtScrollRef}
+            className="pane-scroll pane-scroll-target"
+            dir={targetTextDir}
+            onScroll={onTgtScroll}
+          >
             {doc.children.map((b, i) => {
+              const activeLang = doc.meta.activeTargetLang;
               const en = canonicalPlainText(b);
-              const display = canonicalTargetPlainText(b);
-              const meta = b.translationMeta;
-              const placeholder = !editableHindi && display.length === 0 && en.length > 0;
+              const display = canonicalTargetPlainText(b, activeLang);
+              const meta = getLocaleSlice(b, activeLang).translationMeta;
+              const placeholder = display.length === 0 && en.length > 0;
               const mirrorDim = meta.state === "stale" || meta.state === "error";
               return (
-                <div key={b.id} className="block-wrap" data-block-id={b.id}>
-                  {editableHindi ? (
-                    <textarea
-                      className={`target ${mirrorDim ? "dim" : ""}`}
-                      aria-label={`Hindi block ${i + 1}`}
-                      value={display}
-                      onChange={(e) => onTargetChange(b.id, e.target.value)}
-                    />
-                  ) : (
-                    <div
-                      className={`target ${placeholder || mirrorDim ? "dim" : ""}`}
-                      aria-label={`Hindi block ${i + 1}`}
-                    >
-                      {meta.state === "translating" && <span className="pending">Translating… </span>}
-                      {placeholder ? en : display}
-                    </div>
-                  )}
-                  <div className="meta">
-                    state: {meta.state}
-                    {meta.lastError && <span className="error"> — {meta.lastError}</span>}
-                    {meta.state === "error" && (
-                      <button type="button" className="retry" onClick={() => onRetry(b.id)}>
-                        Retry
-                      </button>
-                    )}
+                <article key={b.id} className="doc-block" data-block-id={b.id}>
+                  <div
+                    className={`target-readonly doc-translation ${placeholder || mirrorDim ? "dim" : ""}`}
+                    aria-label={`Translation paragraph ${i + 1}`}
+                  >
+                    {meta.state === "translating" && <span className="pending">Translating… </span>}
+                    {placeholder ? <span className="mirror-faint">{en}</span> : display}
                   </div>
-                </div>
+                  {meta.state === "error" && meta.lastError && (
+                    <p className="translation-error" role="alert">
+                      {meta.lastError}
+                    </p>
+                  )}
+                </article>
               );
             })}
           </div>
-        </div>
+        </section>
       </div>
+
+      <LlmConfigModal open={configOpen} onClose={() => setConfigOpen(false)} />
     </div>
   );
 }

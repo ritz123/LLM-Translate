@@ -18,7 +18,9 @@ const opts = {
   outfile,
   format: "esm",
   target: "node20",
-  external: ["electron"],
+  // mammoth/word-extractor/pdf-parse are CommonJS and use `require("fs")` etc.
+  // Bundling them into ESM makes esbuild's `require` shim throw "Dynamic require of fs is not supported".
+  external: ["electron", "mammoth", "word-extractor", "pdf-parse"],
   sourcemap: true,
   logLevel: "info",
 };

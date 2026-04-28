@@ -1,8 +1,50 @@
-import type { Block, DocumentRoot, InlineTextNode, TranslationMeta } from "./types";
-import { canonicalPlainTextFromInline } from "./canonical";
+import type { Block, BlockTargetLocaleSlice, DocumentRoot, InlineTextNode, TranslationMeta } from "./types";
+import { canonicalPlainTextFromInline, getLocaleSlice } from "./canonical";
+import { normalizeDocumentMeta, type DocumentMetaInput } from "./documentMeta";
 
 function emptyMeta(): TranslationMeta {
   return { state: "idle", sourceHash: null, targetText: null };
+}
+
+function ensureRootMirrorsActive(b: Block, activeLang: string): Block {
+  const slice = getLocaleSlice(b, activeLang);
+  return {
+    ...b,
+    targetInline: slice.targetInline,
+    translationMeta: { ...slice.translationMeta },
+    targetProvenance: slice.targetProvenance,
+  };
+}
+
+function seedTargetsFromLegacy(b: Block, activeLang: string): Block {
+  let next = b;
+  if (!b.targetsByLang || Object.keys(b.targetsByLang).length === 0) {
+    const hasLegacy =
+      (b.targetInline && b.targetInline.length > 0) ||
+      (b.translationMeta.targetText && b.translationMeta.targetText.length > 0) ||
+      b.translationMeta.state !== "idle" ||
+      b.translationMeta.sourceHash != null;
+    if (hasLegacy) {
+      next = {
+        ...b,
+        targetsByLang: {
+          [activeLang]: {
+            targetInline: b.targetInline?.map((n) => ({ ...n })),
+            translationMeta: { ...b.translationMeta },
+            targetProvenance: b.targetProvenance,
+          },
+        },
+      };
+    }
+  }
+  return ensureRootMirrorsActive(next, activeLang);
+}
+
+/** Normalize meta and per-block locale buckets (call after load or structural edits if needed). */
+export function normalizeDocumentRoot(doc: DocumentRoot): DocumentRoot {
+  const meta = normalizeDocumentMeta(doc.meta);
+  const children = doc.children.map((b) => seedTargetsFromLegacy(b, meta.activeTargetLang));
+  return { ...doc, meta, children };
 }
 
 /** Concatenate two inline sequences with a space seam when both sides plain (Section 3.9.2). */
@@ -36,12 +78,38 @@ export function createInitialDocument(): DocumentRoot {
     lastEditedSide: null,
     contentEpoch: 0,
   };
-  return {
+  return normalizeDocumentRoot({
     type: "document",
     schemaVersion: 1,
-    meta: { title: "Draft", sourceLang: "en", targetLang: "hi" },
+    meta: { title: "Draft", sourceLang: "en", targetLangs: ["hi"], activeTargetLang: "hi" },
     children: [block],
-  };
+  });
+}
+
+/** Build a document from imported plain text (paragraphs split on blank lines). */
+export function buildDocumentFromImportedText(
+  plainText: string,
+  title: string,
+  preserveMeta?: DocumentMetaInput,
+): DocumentRoot {
+  const normalized = plainText.replace(/\r\n/g, "\n");
+  let chunks: string[];
+  if (normalized.trim() === "") {
+    chunks = [""];
+  } else {
+    chunks = normalized.split(/\n{2,}/).map((s) => s.replace(/\r/g, ""));
+  }
+  const meta = normalizeDocumentMeta({
+    ...preserveMeta,
+    title: title.trim() || preserveMeta?.title,
+  });
+  const children = chunks.map((t) => createParagraphBlock(t));
+  return normalizeDocumentRoot({
+    type: "document",
+    schemaVersion: 1,
+    meta,
+    children,
+  });
 }
 
 export function createParagraphBlock(text = ""): Block {
@@ -75,23 +143,37 @@ export function setBlockPlainText(doc: DocumentRoot, blockId: string, text: stri
   };
 }
 
-/** Section 4.1 — Hindi plain text as single run; marks provenance. */
-export function setBlockTargetPlainText(doc: DocumentRoot, blockId: string, text: string): DocumentRoot {
+/** Section 4.1 — target plain text for one locale; mirrors root when `targetLang` is the active pane locale. */
+export function setBlockTargetPlainText(
+  doc: DocumentRoot,
+  blockId: string,
+  text: string,
+  targetLang?: string,
+): DocumentRoot {
+  const lang = targetLang ?? doc.meta.activeTargetLang;
+  const active = doc.meta.activeTargetLang;
   return {
     ...doc,
     children: doc.children.map((b) => {
       if (b.id !== blockId) return b;
       const targetInline: InlineTextNode[] = [{ kind: "text", text, styles: [] }];
-      return {
-        ...b,
+      const prevSlice = getLocaleSlice(b, lang);
+      const nextSlice: BlockTargetLocaleSlice = {
         targetInline,
-        translationMeta: {
-          ...b.translationMeta,
-          targetText: text,
-        },
-        lastEditedSide: "target",
+        translationMeta: { ...prevSlice.translationMeta, targetText: text },
         targetProvenance: "user",
       };
+      const nextTb = { ...(b.targetsByLang ?? {}), [lang]: nextSlice };
+      const nb: Block = { ...b, targetsByLang: nextTb, lastEditedSide: "target" };
+      if (lang === active) {
+        return {
+          ...nb,
+          targetInline,
+          translationMeta: nextSlice.translationMeta,
+          targetProvenance: "user",
+        };
+      }
+      return nb;
     }),
   };
 }
@@ -133,31 +215,53 @@ export function setBlockTranslationMeta(
   doc: DocumentRoot,
   blockId: string,
   patch: Partial<TranslationMeta>,
+  targetLang?: string,
 ): DocumentRoot {
+  const lang = targetLang ?? doc.meta.activeTargetLang;
+  const active = doc.meta.activeTargetLang;
   return {
     ...doc,
-    children: doc.children.map((b) =>
-      b.id !== blockId ? b : { ...b, translationMeta: { ...b.translationMeta, ...patch } },
-    ),
+    children: doc.children.map((b) => {
+      if (b.id !== blockId) return b;
+      const prevSlice = getLocaleSlice(b, lang);
+      const nextSlice: BlockTargetLocaleSlice = {
+        ...prevSlice,
+        translationMeta: { ...prevSlice.translationMeta, ...patch },
+      };
+      const nextTb = { ...(b.targetsByLang ?? {}), [lang]: nextSlice };
+      const nb: Block = { ...b, targetsByLang: nextTb };
+      if (lang === active) {
+        return {
+          ...nb,
+          translationMeta: nextSlice.translationMeta,
+          targetInline: nextSlice.targetInline,
+          targetProvenance: nextSlice.targetProvenance,
+        };
+      }
+      return nb;
+    }),
   };
 }
 
-/** Apply machine translation to target surface. */
+/** Apply machine translation to one target locale (and root when that locale is active). */
 export function setBlockMachineTranslation(
   doc: DocumentRoot,
   blockId: string,
   translation: string,
   sourceHash: string,
+  targetLang?: string,
 ): DocumentRoot {
+  const lang = targetLang ?? doc.meta.activeTargetLang;
+  const active = doc.meta.activeTargetLang;
   return {
     ...doc,
     children: doc.children.map((b) => {
       if (b.id !== blockId) return b;
-      return {
-        ...b,
+      const prevSlice = getLocaleSlice(b, lang);
+      const nextSlice: BlockTargetLocaleSlice = {
         targetInline: [{ kind: "text", text: translation, styles: [] }],
         translationMeta: {
-          ...b.translationMeta,
+          ...prevSlice.translationMeta,
           state: "done",
           sourceHash,
           targetText: translation,
@@ -165,6 +269,17 @@ export function setBlockMachineTranslation(
         },
         targetProvenance: "machine",
       };
+      const nextTb = { ...(b.targetsByLang ?? {}), [lang]: nextSlice };
+      const nb: Block = { ...b, targetsByLang: nextTb };
+      if (lang === active) {
+        return {
+          ...nb,
+          targetInline: nextSlice.targetInline,
+          translationMeta: nextSlice.translationMeta,
+          targetProvenance: "machine",
+        };
+      }
+      return nb;
     }),
   };
 }
@@ -196,7 +311,7 @@ export function mergeBlockWithPrevious(
   };
   const nextChildren = [...doc.children.slice(0, i - 1), merged, ...doc.children.slice(i + 1)];
   return {
-    doc: { ...doc, children: nextChildren },
+    doc: normalizeDocumentRoot({ ...doc, children: nextChildren }),
     removedIds: [prev.id, cur.id],
     newBlockId: newId,
   };
@@ -238,5 +353,9 @@ export function splitBlockAt(
     lastEditedSide: "source",
   };
   const nextChildren = [...doc.children.slice(0, i), b1, b2, ...doc.children.slice(i + 1)];
-  return { doc: { ...doc, children: nextChildren }, removedId: block.id, newIds: [id1, id2] };
+  return {
+    doc: normalizeDocumentRoot({ ...doc, children: nextChildren }),
+    removedId: block.id,
+    newIds: [id1, id2],
+  };
 }

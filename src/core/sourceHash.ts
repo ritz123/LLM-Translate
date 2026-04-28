@@ -35,12 +35,13 @@ export function translationHashPayload(
   ].join("\u001f");
 }
 
-/** Forward EN→HI fingerprint for a block. */
-export function sourceHashInput(block: Block, meta: DocumentMeta): string {
+/** Forward EN→target fingerprint for a block (per target locale). */
+export function sourceHashInput(block: Block, meta: DocumentMeta, targetLang?: string): string {
+  const tl = targetLang ?? meta.activeTargetLang;
   return translationHashPayload(
     canonicalPlainText(block),
     meta.sourceLang,
-    meta.targetLang,
+    tl,
     block,
   );
 }
@@ -53,15 +54,30 @@ export async function sha256Hex(utf8String: string): Promise<string> {
     .join("");
 }
 
-export async function computeSourceHash(block: Block, meta: DocumentMeta): Promise<string> {
-  return sha256Hex(sourceHashInput(block, meta));
+export async function computeSourceHash(
+  block: Block,
+  meta: DocumentMeta,
+  targetLang?: string,
+): Promise<string> {
+  return sha256Hex(sourceHashInput(block, meta, targetLang));
 }
 
-/** Reverse HI→EN fingerprint (Section 4.1). */
-export function reverseHashInput(block: Block, meta: DocumentMeta, hindiPlain: string): string {
-  return translationHashPayload(hindiPlain, meta.targetLang, meta.sourceLang, block);
+/** Reverse target→EN fingerprint (Section 4.1). */
+export function reverseHashInput(
+  block: Block,
+  meta: DocumentMeta,
+  targetPlain: string,
+  targetLang?: string,
+): string {
+  const tl = targetLang ?? meta.activeTargetLang;
+  return translationHashPayload(targetPlain, tl, meta.sourceLang, block);
 }
 
-export async function computeReverseHash(block: Block, meta: DocumentMeta, hindiPlain: string): Promise<string> {
-  return sha256Hex(reverseHashInput(block, meta, hindiPlain));
+export async function computeReverseHash(
+  block: Block,
+  meta: DocumentMeta,
+  targetPlain: string,
+  targetLang?: string,
+): Promise<string> {
+  return sha256Hex(reverseHashInput(block, meta, targetPlain, targetLang));
 }

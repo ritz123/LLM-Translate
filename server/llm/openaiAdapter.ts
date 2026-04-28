@@ -6,9 +6,9 @@ import type { ServerLLMAdapter } from "./types.ts";
  * Requires OPENAI_API_KEY; otherwise factory returns null and server falls back to mock.
  */
 export function createOpenAIAdapter(): ServerLLMAdapter | null {
-  const key = process.env.OPENAI_API_KEY;
+  const key = (process.env.OPENAI_API_KEY ?? "").trim();
   if (!key) return null;
-  const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
+  const model = (process.env.OPENAI_MODEL ?? "").trim() || "gpt-4o-mini";
   return {
     modelVersion: model,
     async translate(req: TranslateRequest) {

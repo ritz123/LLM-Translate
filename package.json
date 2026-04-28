@@ -13,11 +13,14 @@
     "desktop": "npm run build && electron ."
   },
   "dependencies": {
-    "dotenv": "^16.4.7",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "word-extractor": "^1.0.4"
   },
   "devDependencies": {
+    "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",
