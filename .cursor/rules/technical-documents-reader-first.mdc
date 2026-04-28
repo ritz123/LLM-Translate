@@ -1,0 +1,27 @@
+---
+description: Technical writing—define terms before examples; calm, lucid prose; foreshadow complexity.
+globs: "**/*.{md,mdx}"
+alwaysApply: false
+---
+
+# Technical documents: reader-first order and tone
+
+When drafting or editing technical documents (plans, architecture notes, READMEs, runbooks, ADRs, specs):
+
+## Order of information
+
+1. **Name the topic and audience** in plain language before detail. Say what the document will cover and what the reader should be able to do or decide when done.
+2. **Define or gloss terms before use.** Do not open with diagrams, code blocks, tables, or dense examples until the reader knows what the named pieces are (what they represent, why they matter here). A short glossary or “In this doc, X means …” is enough when several terms appear together.
+3. **Then** add examples, diagrams, or step lists that illustrate those definitions. Each visual or snippet should connect back to terms the reader has already seen explained.
+
+## Tone and pacing
+
+- Prefer **lucid, direct sentences** over hype, drama, or “shock and awe” (no sudden walls of jargon, giant diagrams, or unexplained acronyms as the first impression).
+- **Anticipate what comes next.** Before a heavier section (formal notation, edge cases, security implications, long procedures), add one or two sentences that say what is coming and why, so the shift in density feels expected rather than abrupt.
+
+## Self-check before finalizing
+
+- Could a newcomer read the opening in order without needing to scroll ahead to decode vocabulary or a figure?
+- Is every acronym or domain term either expanded on first use or linked to a prior definition in the same doc?
+
+If you need this behavior outside Markdown sessions, set `alwaysApply: true` in this file’s frontmatter.
