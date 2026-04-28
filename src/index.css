@@ -1,8 +1,6 @@
 :root {
   font-family: "Segoe UI", system-ui, sans-serif;
   line-height: 1.45;
-  color: #0f172a;
-  background: #f1f5f9;
 }
 
 * {
@@ -543,7 +541,7 @@ code {
 .translation-editor-v2 .panes-v2 {
   flex: 1;
   display: grid;
-  grid-template-columns: 1.22fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 1.25rem;
   align-items: stretch;
   min-height: 0;

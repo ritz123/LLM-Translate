@@ -22,6 +22,7 @@ import FileUploadOutlined from "@mui/icons-material/FileUploadOutlined";
 import LanguageOutlined from "@mui/icons-material/LanguageOutlined";
 import PictureAsPdfOutlined from "@mui/icons-material/PictureAsPdfOutlined";
 import InfoOutlined from "@mui/icons-material/InfoOutlined";
+import PaletteOutlined from "@mui/icons-material/PaletteOutlined";
 import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import {
   buildDocumentFromImportedText,
@@ -46,6 +47,7 @@ import { collectVisibleBlockIds, isLazyTranslationDocument } from "@core/lazyTra
 import { targetScriptClassForLang } from "@core/targetLangFonts";
 import { selectMenuProps } from "../ui/selectMenuProps";
 import { TOOLBAR_CONTROL_HEIGHT_PX, toolbarIconButtonSx } from "../ui/toolbarChrome";
+import { APP_THEME_OPTIONS, useThemePreference } from "../theme";
 import AboutDialog from "./AboutDialog";
 import DesktopTitleBar from "./DesktopTitleBar";
 import LlmConfigModal from "./LlmConfigModal";
@@ -140,6 +142,7 @@ function equalizePairedBlockHeights(
 }
 
 export default function TranslationEditor() {
+  const { themeId, setThemeId } = useThemePreference();
   const [doc, setDoc] = useState<DocumentRoot>(() => createInitialDocument());
   const [offline, setOffline] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
@@ -149,6 +152,7 @@ export default function TranslationEditor() {
     version: getBundledAppVersion(),
   }));
   const [exportMenuAnchor, setExportMenuAnchor] = useState<null | HTMLElement>(null);
+  const [themeMenuAnchor, setThemeMenuAnchor] = useState<null | HTMLElement>(null);
   const [exportPdfBusy, setExportPdfBusy] = useState(false);
   const [pdfSnackbar, setPdfSnackbar] = useState<{
     open: boolean;
@@ -458,6 +462,7 @@ export default function TranslationEditor() {
 
   const openExportPdfMenu = (e: MouseEvent<HTMLElement>) => setExportMenuAnchor(e.currentTarget);
   const closeExportPdfMenu = () => setExportMenuAnchor(null);
+  const closeThemeMenu = () => setThemeMenuAnchor(null);
 
   const onExportPdfVariant = useCallback(async (variant: PdfExportVariant) => {
     closeExportPdfMenu();
@@ -695,6 +700,52 @@ export default function TranslationEditor() {
                 <MenuItem id="toolbar-export-pdf-bilingual" onClick={() => void onExportPdfVariant("bilingual")}>
                   Bilingual (source + translation per paragraph)
                 </MenuItem>
+              </Menu>
+            </>
+            <>
+              <Tooltip title="Theme">
+                <IconButton
+                  id="toolbar-theme"
+                  size="small"
+                  color="primary"
+                  aria-controls={themeMenuAnchor ? "toolbar-theme-menu" : undefined}
+                  aria-expanded={themeMenuAnchor ? true : undefined}
+                  aria-haspopup="true"
+                  aria-label="Choose color theme"
+                  onClick={(e: MouseEvent<HTMLElement>) => setThemeMenuAnchor(e.currentTarget)}
+                  sx={{
+                    ...toolbarIconButtonSx,
+                    border: 1,
+                    borderColor: "divider",
+                    bgcolor: "background.paper",
+                  }}
+                >
+                  <PaletteOutlined fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              <Menu
+                id="toolbar-theme-menu"
+                anchorEl={themeMenuAnchor}
+                open={Boolean(themeMenuAnchor)}
+                onClose={closeThemeMenu}
+                anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+                transformOrigin={{ vertical: "top", horizontal: "left" }}
+                slotProps={{ paper: { sx: { minWidth: 220 } } }}
+                disableAutoFocusItem
+              >
+                {APP_THEME_OPTIONS.map((o) => (
+                  <MenuItem
+                    key={o.id}
+                    id={`toolbar-theme-option-${o.id}`}
+                    selected={themeId === o.id}
+                    onClick={() => {
+                      setThemeId(o.id);
+                      closeThemeMenu();
+                    }}
+                  >
+                    {o.label}
+                  </MenuItem>
+                ))}
               </Menu>
             </>
             <Tooltip title="Settings">
