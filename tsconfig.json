@@ -3,6 +3,8 @@
     "target": "ES2022",
     "useDefineForClassFields": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    /* Omit implicit @types/* (avoids TS2688 for optional deps like @types/plist on Windows CI). */
+    "types": [],
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
