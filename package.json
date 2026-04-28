@@ -2,7 +2,7 @@
   "name": "notebookllm-translation-editor",
   "private": true,
   "license": "GPL-3.0-only",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "type": "module",
   "main": "dist-electron/main.mjs",
   "scripts": {
