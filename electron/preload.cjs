@@ -17,4 +17,5 @@ contextBridge.exposeInMainWorld("translatorDesktop", {
   translateBatch: (requests) =>
     ipcRenderer.invoke("desktop:translate-batch", { requests }),
   importDocument: () => ipcRenderer.invoke("desktop:import-document"),
+  exportPdf: (payload) => ipcRenderer.invoke("desktop:export-pdf", payload),
 });

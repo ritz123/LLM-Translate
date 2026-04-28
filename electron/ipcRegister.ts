@@ -6,6 +6,7 @@ import {
   validateTranslateRequest,
   type TranslationService,
 } from "./translateService.ts";
+import { exportPdfViaDialog } from "./exportPdf.ts";
 import { importDocumentViaDialog } from "./importDocument.ts";
 
 export function registerIpcHandlers(s: TranslationService): void {
@@ -77,6 +78,11 @@ export function registerIpcHandlers(s: TranslationService): void {
   ipcMain.handle("desktop:import-document", async (evt: IpcMainInvokeEvent) => {
     const win = BrowserWindow.fromWebContents(evt.sender);
     return await importDocumentViaDialog(win);
+  });
+
+  ipcMain.handle("desktop:export-pdf", async (evt: IpcMainInvokeEvent, body: unknown) => {
+    const win = BrowserWindow.fromWebContents(evt.sender);
+    return await exportPdfViaDialog(win, body);
   });
 
   ipcMain.handle("desktop:window-minimize", (evt: IpcMainInvokeEvent) => {

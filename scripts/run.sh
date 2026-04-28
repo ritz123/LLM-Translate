@@ -36,22 +36,22 @@ case "$CMD" in
     exit 0
     ;;
   dev)
-    "$ROOT/scripts/setup.sh"
+    "$ROOT/scripts/setup.sh" 2>&1 | tee setup.log
     echo "→ npm run dev (Electron + Vite)"
     exec npm run dev 2>&1 | tee dev.log
     ;;
   desktop)
-    "$ROOT/scripts/setup.sh"
+    "$ROOT/scripts/setup.sh" 2>&1 | tee setup.log
     echo "→ npm run desktop (build + Electron)"
     exec npm run desktop 2>&1 | tee desktop.log
     ;;
   build)
-    "$ROOT/scripts/setup.sh"
+    "$ROOT/scripts/setup.sh" 2>&1 | tee setup.log 
     echo "→ npm run build"
     exec npm run build 2>&1 | tee build.log
     ;;
   setup)
-    exec "$ROOT/scripts/setup.sh" "$@"
+    exec "$ROOT/scripts/setup.sh" "$@" 2>&1 | tee setup.log
     ;;
   *)
     echo "Unknown command: $CMD" >&2

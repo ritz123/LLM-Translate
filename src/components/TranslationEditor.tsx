@@ -1,10 +1,12 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { flushSync } from "react-dom";
 import {
   Alert,
   AppBar,
   Box,
-  Button,
+  IconButton,
+  InputAdornment,
+  Menu,
   MenuItem,
   Paper,
   Select,
@@ -15,6 +17,7 @@ import {
 } from "@mui/material";
 import FileUploadOutlined from "@mui/icons-material/FileUploadOutlined";
 import LanguageOutlined from "@mui/icons-material/LanguageOutlined";
+import PictureAsPdfOutlined from "@mui/icons-material/PictureAsPdfOutlined";
 import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import {
   buildDocumentFromImportedText,
@@ -33,10 +36,11 @@ import { translateOne } from "@core/translationFetch";
 import { logTranslation } from "@core/observability";
 import { normalizeDocumentMeta } from "@core/documentMeta";
 import { INDIAN_TARGET_LANGUAGE_OPTIONS, labelForTargetLang } from "@core/indianLanguages";
+import { buildPdfExportPayload, type PdfExportVariant } from "@core/pdfExport";
 import { collectVisibleBlockIds, isLazyTranslationDocument } from "@core/lazyTranslation";
 import { targetScriptClassForLang } from "@core/targetLangFonts";
 import { selectMenuProps } from "../ui/selectMenuProps";
-import { TOOLBAR_CONTROL_HEIGHT_PX, toolbarButtonSx } from "../ui/toolbarChrome";
+import { TOOLBAR_CONTROL_HEIGHT_PX, toolbarIconButtonSx } from "../ui/toolbarChrome";
 import DesktopTitleBar from "./DesktopTitleBar";
 import LlmConfigModal from "./LlmConfigModal";
 
@@ -127,6 +131,7 @@ export default function TranslationEditor() {
   const [doc, setDoc] = useState<DocumentRoot>(() => createInitialDocument());
   const [offline, setOffline] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
+  const [exportMenuAnchor, setExportMenuAnchor] = useState<null | HTMLElement>(null);
   const docRef = useRef(doc);
   docRef.current = doc;
   const cacheRef = useRef(new LruTranslationCache(256));
@@ -413,6 +418,24 @@ export default function TranslationEditor() {
     }
   }, [flushForwardSchedulers, cancelForwardDebounce, runForward]);
 
+  const openExportPdfMenu = (e: MouseEvent<HTMLElement>) => setExportMenuAnchor(e.currentTarget);
+  const closeExportPdfMenu = () => setExportMenuAnchor(null);
+
+  const onExportPdfVariant = useCallback(async (variant: PdfExportVariant) => {
+    closeExportPdfMenu();
+    const api = window.translatorDesktop?.exportPdf;
+    if (!api) {
+      window.alert("PDF export is only available in the desktop app.");
+      return;
+    }
+    const payload = buildPdfExportPayload(docRef.current, variant);
+    const res = await api(payload);
+    if ("cancelled" in res && res.cancelled) return;
+    if ("ok" in res && res.ok === false) {
+      window.alert(res.error);
+    }
+  }, []);
+
   const setTargetLanguageDropdown = useCallback(
     (code: string) => {
       const snap = docRef.current;
@@ -555,29 +578,80 @@ export default function TranslationEditor() {
             </Typography>
           </Box>
           <Box id="app-header-actions" sx={{ display: "flex", alignItems: "center", gap: 1.25, flexWrap: "wrap", WebkitAppRegion: "no-drag" }}>
-            <Tooltip title="Import a document (Word, PDF, plain text)">
-              <Button
+            <Tooltip title="Import a document (Word, PDF, plain text, and more)">
+              <IconButton
                 id="toolbar-import-document"
-                variant="outlined"
                 size="small"
+                color="primary"
                 onClick={() => void onImportDocument()}
-                startIcon={<FileUploadOutlined fontSize="small" />}
-                sx={toolbarButtonSx}
+                aria-label="Import document"
+                sx={{
+                  ...toolbarIconButtonSx,
+                  border: 1,
+                  borderColor: "divider",
+                  bgcolor: "background.paper",
+                }}
               >
-                Import…
-              </Button>
+                <FileUploadOutlined fontSize="small" />
+              </IconButton>
             </Tooltip>
-            <Tooltip title="LLM provider and API keys">
-              <Button
+            <>
+              <Tooltip title="Export as PDF — opens a menu: source only, translation only, or bilingual (source + translation per paragraph)">
+                <IconButton
+                  id="toolbar-export-pdf"
+                  size="small"
+                  color="primary"
+                  aria-controls={exportMenuAnchor ? "toolbar-export-pdf-menu" : undefined}
+                  aria-expanded={exportMenuAnchor ? true : undefined}
+                  aria-haspopup="true"
+                  aria-label="Export as PDF"
+                  onClick={openExportPdfMenu}
+                  sx={{
+                    ...toolbarIconButtonSx,
+                    border: 1,
+                    borderColor: "divider",
+                    bgcolor: "background.paper",
+                  }}
+                >
+                  <PictureAsPdfOutlined fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              <Menu
+                id="toolbar-export-pdf-menu"
+                anchorEl={exportMenuAnchor}
+                open={Boolean(exportMenuAnchor)}
+                onClose={closeExportPdfMenu}
+                anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+                transformOrigin={{ vertical: "top", horizontal: "left" }}
+                slotProps={{ paper: { sx: { minWidth: 260 } } }}
+                disableAutoFocusItem
+              >
+                <MenuItem id="toolbar-export-pdf-source" onClick={() => void onExportPdfVariant("source")}>
+                  Source text only
+                </MenuItem>
+                <MenuItem id="toolbar-export-pdf-target" onClick={() => void onExportPdfVariant("target")}>
+                  Translation only ({labelForTargetLang(doc.meta.activeTargetLang)})
+                </MenuItem>
+                <MenuItem id="toolbar-export-pdf-bilingual" onClick={() => void onExportPdfVariant("bilingual")}>
+                  Bilingual (source + translation per paragraph)
+                </MenuItem>
+              </Menu>
+            </>
+            <Tooltip title="Configuration — LLM provider, models, and API keys">
+              <IconButton
                 id="toolbar-open-configuration"
-                variant="contained"
                 size="small"
                 onClick={() => setConfigOpen(true)}
-                startIcon={<SettingsOutlined fontSize="small" />}
-                sx={toolbarButtonSx}
+                aria-label="Open configuration"
+                sx={{
+                  ...toolbarIconButtonSx,
+                  bgcolor: "primary.main",
+                  color: "primary.contrastText",
+                  "&:hover": { bgcolor: "primary.dark" },
+                }}
               >
-                Settings
-              </Button>
+                <SettingsOutlined fontSize="small" />
+              </IconButton>
             </Tooltip>
             <Box
               id="toolbar-target-lang-form"
@@ -587,74 +661,65 @@ export default function TranslationEditor() {
                 display: "flex",
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 1,
+                gap: 0,
                 minWidth: 0,
                 flexShrink: 0,
                 height: TOOLBAR_CONTROL_HEIGHT_PX,
               }}
             >
-              <LanguageOutlined sx={{ fontSize: "1.125rem", color: "text.secondary", flexShrink: 0 }} aria-hidden />
-              <Typography
-                id="toolbar-target-lang-label"
-                component="label"
-                variant="body2"
-                color="text.secondary"
-                htmlFor="toolbar-target-lang-select"
-                sx={{
-                  whiteSpace: "nowrap",
-                  lineHeight: 1,
-                  fontSize: "0.8125rem",
-                  fontWeight: 500,
-                  flexShrink: 0,
-                }}
-              >
-                Target language
-              </Typography>
-              <Select
-                id="toolbar-target-lang-select"
-                labelId="toolbar-target-lang-label"
-                aria-labelledby="toolbar-target-lang-label"
-                className={`target-lang-font ${targetFontClass}`}
-                dir={targetTextDir}
-                value={doc.meta.activeTargetLang}
-                onChange={(e) => setTargetLanguageDropdown(e.target.value)}
-                variant="outlined"
-                size="small"
-                displayEmpty
-                MenuProps={selectMenuProps(320)}
-                sx={{
-                  minWidth: 200,
-                  maxWidth: 280,
-                  height: TOOLBAR_CONTROL_HEIGHT_PX,
-                  fontSize: "0.8125rem",
-                  "& .MuiOutlinedInput-root": {
+              <Tooltip title="Target language — click here to open the menu and choose the translation language for the right pane">
+                <Select
+                  id="toolbar-target-lang-select"
+                  aria-label="Target language"
+                  className={`target-lang-font ${targetFontClass}`}
+                  dir={targetTextDir}
+                  value={doc.meta.activeTargetLang}
+                  onChange={(e) => setTargetLanguageDropdown(e.target.value)}
+                  variant="outlined"
+                  size="small"
+                  displayEmpty
+                  MenuProps={selectMenuProps(320)}
+                  startAdornment={
+                    <InputAdornment position="start" sx={{ mr: 0, maxHeight: "none" }}>
+                      <LanguageOutlined sx={{ fontSize: "1.125rem", color: "text.secondary" }} aria-hidden />
+                    </InputAdornment>
+                  }
+                  sx={{
+                    minWidth: 200,
+                    maxWidth: 300,
                     height: TOOLBAR_CONTROL_HEIGHT_PX,
-                    borderRadius: 1,
-                  },
-                  "& .MuiOutlinedInput-notchedOutline": {
-                    top: 0,
-                  },
-                  "& .MuiSelect-select": {
-                    display: "flex",
-                    alignItems: "center",
-                    minHeight: TOOLBAR_CONTROL_HEIGHT_PX - 2,
-                    py: 0,
-                    px: 1.25,
-                    boxSizing: "border-box",
-                  },
-                }}
-              >
-                {!INDIAN_TARGET_LANGUAGE_OPTIONS.some((o) => o.code === doc.meta.activeTargetLang) && (
-                  <MenuItem id={`toolbar-target-lang-option-${doc.meta.activeTargetLang}`} value={doc.meta.activeTargetLang}>
-                    {labelForTargetLang(doc.meta.activeTargetLang)} ({doc.meta.activeTargetLang})
-                  </MenuItem>
-                )}
-                {INDIAN_TARGET_LANGUAGE_OPTIONS.map((o) => (
-                  <MenuItem id={`toolbar-target-lang-option-${o.code}`} key={o.code} value={o.code}>
-                    {o.label} ({o.code})
-                  </MenuItem>
-                ))}
-              </Select>
+                    fontSize: "0.8125rem",
+                    "& .MuiOutlinedInput-root": {
+                      height: TOOLBAR_CONTROL_HEIGHT_PX,
+                      borderRadius: 1,
+                      pl: 0.75,
+                    },
+                    "& .MuiOutlinedInput-notchedOutline": {
+                      top: 0,
+                    },
+                    "& .MuiSelect-select": {
+                      display: "flex",
+                      alignItems: "center",
+                      minHeight: TOOLBAR_CONTROL_HEIGHT_PX - 2,
+                      py: 0,
+                      pr: 1.25,
+                      pl: 0.5,
+                      boxSizing: "border-box",
+                    },
+                  }}
+                >
+                  {!INDIAN_TARGET_LANGUAGE_OPTIONS.some((o) => o.code === doc.meta.activeTargetLang) && (
+                    <MenuItem id={`toolbar-target-lang-option-${doc.meta.activeTargetLang}`} value={doc.meta.activeTargetLang}>
+                      {labelForTargetLang(doc.meta.activeTargetLang)} ({doc.meta.activeTargetLang})
+                    </MenuItem>
+                  )}
+                  {INDIAN_TARGET_LANGUAGE_OPTIONS.map((o) => (
+                    <MenuItem id={`toolbar-target-lang-option-${o.code}`} key={o.code} value={o.code}>
+                      {o.label} ({o.code})
+                    </MenuItem>
+                  ))}
+                </Select>
+              </Tooltip>
             </Box>
           </Box>
           <Box id="app-window-controls-slot" sx={{ ml: "auto", display: "flex", alignItems: "center", flexShrink: 0, WebkitAppRegion: "no-drag" }}>

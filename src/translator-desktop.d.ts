@@ -1,3 +1,4 @@
+import type { PdfExportPayload, PdfExportResult } from "@core/pdfExport";
 import type { TranslateRequest, TranslateResponse } from "@core/types";
 
 export interface TranslatorDebugInfo {
@@ -78,6 +79,7 @@ export interface TranslatorDesktopAPI {
   translate(body: TranslateRequest): Promise<TranslateResponse>;
   translateBatch(requests: TranslateRequest[]): Promise<{ results: TranslateResponse[] }>;
   importDocument(): Promise<ImportDocumentResult>;
+  exportPdf(payload: PdfExportPayload): Promise<PdfExportResult>;
 }
 
 declare global {
