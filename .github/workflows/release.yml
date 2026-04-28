@@ -62,7 +62,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          
+
       - name: Clean npm cache
         run: npm cache clean --force
 
@@ -98,7 +98,8 @@ jobs:
           gh release delete "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}" -y --cleanup-tag || true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
+    
+
       - name: Create Release and upload artifacts
         uses: softprops/action-gh-release@v2
         with:
@@ -107,6 +108,6 @@ jobs:
           files: artifacts/**/*
           draft: false
           prerelease: false
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
