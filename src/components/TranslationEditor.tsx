@@ -42,7 +42,7 @@ import { logTranslation } from "@core/observability";
 import { normalizeDocumentMeta } from "@core/documentMeta";
 import { INDIAN_TARGET_LANGUAGE_OPTIONS, labelForTargetLang } from "@core/indianLanguages";
 import { buildPdfExportPayload, type PdfExportVariant } from "@core/pdfExport";
-import { getAppInfo, getBundledAppVersion, getBundledProductName } from "@core/appMeta";
+import { getAppInfo, getBundledAppVersion, getBundledProductName, getLicenseShortLabel } from "@core/appMeta";
 import { collectVisibleBlockIds, isLazyTranslationDocument } from "@core/lazyTranslation";
 import { targetScriptClassForLang } from "@core/targetLangFonts";
 import { selectMenuProps } from "../ui/selectMenuProps";
@@ -1083,7 +1083,7 @@ export default function TranslationEditor() {
         }}
       >
         <Typography id="app-copyright-text" variant="caption" color="text.secondary" component="p" sx={{ m: 0 }}>
-          © {new Date().getFullYear()} Biplab Sarkar. All rights reserved. · v{appInfo.version}
+          © {new Date().getFullYear()} Biplab Sarkar · {getLicenseShortLabel()} · v{appInfo.version}
         </Typography>
       </Box>
 

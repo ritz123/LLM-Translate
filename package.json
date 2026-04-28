@@ -1,6 +1,7 @@
 {
   "name": "notebookllm-translation-editor",
   "private": true,
+  "license": "GPL-3.0-only",
   "version": "1.0.5",
   "type": "module",
   "main": "dist-electron/main.mjs",
@@ -63,7 +64,7 @@
   "build": {
     "appId": "io.github.ritz123.llm-translate",
     "productName": "Translator",
-    "copyright": "Copyright © Biplab Sarkar",
+    "copyright": "Copyright © Biplab Sarkar. Licensed under GNU GPL v3.0 only.",
     "directories": {
       "output": "release",
       "buildResources": "build"
