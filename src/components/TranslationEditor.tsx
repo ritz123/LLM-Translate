@@ -578,7 +578,7 @@ export default function TranslationEditor() {
             </Typography>
           </Box>
           <Box id="app-header-actions" sx={{ display: "flex", alignItems: "center", gap: 1.25, flexWrap: "wrap", WebkitAppRegion: "no-drag" }}>
-            <Tooltip title="Import a document (Word, PDF, plain text, and more)">
+            <Tooltip title="Import">
               <IconButton
                 id="toolbar-import-document"
                 size="small"
@@ -596,7 +596,7 @@ export default function TranslationEditor() {
               </IconButton>
             </Tooltip>
             <>
-              <Tooltip title="Export as PDF — opens a menu: source only, translation only, or bilingual (source + translation per paragraph)">
+              <Tooltip title="Export PDF">
                 <IconButton
                   id="toolbar-export-pdf"
                   size="small"
@@ -637,7 +637,7 @@ export default function TranslationEditor() {
                 </MenuItem>
               </Menu>
             </>
-            <Tooltip title="Configuration — LLM provider, models, and API keys">
+            <Tooltip title="Settings">
               <IconButton
                 id="toolbar-open-configuration"
                 size="small"
@@ -667,7 +667,7 @@ export default function TranslationEditor() {
                 height: TOOLBAR_CONTROL_HEIGHT_PX,
               }}
             >
-              <Tooltip title="Target language — click here to open the menu and choose the translation language for the right pane">
+              <Tooltip title="Target language">
                 <Select
                   id="toolbar-target-lang-select"
                   aria-label="Target language"

@@ -48,7 +48,7 @@ export default function DesktopTitleBar() {
         </IconButton>
       </Tooltip>
       <Box sx={{ width: "1px", alignSelf: "stretch", bgcolor: "divider", flexShrink: 0 }} aria-hidden />
-      <Tooltip title="Maximize or restore">
+      <Tooltip title="Maximize">
         <IconButton
           id="desktop-window-maximize-toggle"
           size="small"
@@ -65,7 +65,7 @@ export default function DesktopTitleBar() {
         </IconButton>
       </Tooltip>
       <Box sx={{ width: "1px", alignSelf: "stretch", bgcolor: "divider", flexShrink: 0 }} aria-hidden />
-      <Tooltip title="Close window">
+      <Tooltip title="Close">
         <IconButton
           id="desktop-window-close"
           size="small"
