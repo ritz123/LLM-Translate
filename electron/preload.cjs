@@ -1,6 +1,11 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("translatorDesktop", {
+  shell: {
+    minimizeWindow: () => ipcRenderer.invoke("desktop:window-minimize"),
+    maximizeToggle: () => ipcRenderer.invoke("desktop:window-maximize-toggle"),
+    closeWindow: () => ipcRenderer.invoke("desktop:window-close"),
+  },
   getConfig: () => ipcRenderer.invoke("desktop:get-config"),
   getDebugInfo: () => ipcRenderer.invoke("desktop:debug-info"),
   debugLlmPing: () => ipcRenderer.invoke("desktop:debug-llm-ping"),

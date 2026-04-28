@@ -1,31 +1,31 @@
 ---
 name: Translation Editor Architecture
-overview: System-level design for a side-by-side document editor with low-latency English-to-Hindi translation (large language model), optional editable Hindi with reverse sync to English (Section 4.1), debounced input, and semantic-completeness gating. Architecture and interfaces only—no implementation code in this document.
+overview: System-level design for a side-by-side document editor with LLM translation, debounced forward pipeline, and optional bidirectional Hindi editing (Section 4.1). **§ Implementation status** records what the `TranslatorLLM` / notebookllm-translation-editor codebase actually ships today (Electron + React); the rest remains the target architecture.
 todos:
   - id: doc-model
     content: Define block-oriented Document Model with stable block IDs, separate text/style, hash, and translationState
-    status: pending
+    status: completed
   - id: ui-sidebyside
     content: "Design side-by-side UI: editable EN pane; optional editable HI with reverse sync (Section 4.1); style mirror + block-ID scroll sync"
-    status: pending
+    status: completed
   - id: change-pipeline
     content: "Implement Change Pipeline: immediate local render, per-block 2s debounce, stale-supersede by hash"
-    status: pending
+    status: completed
   - id: completeness-gate
     content: "Implement two-stage Completeness Gate: local heuristics (Stage A) + semantic delta/embedding check (Stage B)"
     status: pending
   - id: translation-service
     content: Build Translation Service with batching, context window, server+client caching by content hash
-    status: pending
+    status: completed
   - id: llm-adapter
     content: Define LLMAdapter interface and provide OpenAI, Local, and Mock implementations (dependency injection)
-    status: pending
+    status: completed
   - id: robustness
     content: Add idempotency, backpressure, retry-with-jitter, offline fallback, and observability (logs/metrics)
     status: pending
   - id: vertical-slice
     content: "Deliver minimal vertical slice: single-paragraph panes + mock LLM + debounced pipeline + block-level cache"
-    status: pending
+    status: completed
   - id: open-questions
     content: "Resolve open questions: client stack, LLM provider, bidirectional conflict + style policy (Section 11), document size range"
     status: pending
@@ -47,7 +47,70 @@ We are building a **side-by-side document experience**. On the left, the user ed
 
 **What follows below:** The rest of this plan is the **structured design**—layers, diagrams, interfaces, and operational details—so engineers can implement the system in a **modular, testable** way without mixing UI, document state, translation policy, and LLM vendor code.
 
+## Implementation status (this repository)
 
+The following describes the **current** TranslatorLLM **notebookllm-translation-editor** app: **React 19 + Vite** renderer, **Electron** main process, **no standalone HTTP translate server** in the desktop path—translation is **`ipcMain.handle` → `translateService`** with `preload.cjs` exposing `window.translatorDesktop`.
+
+### Runtime and entrypoints
+
+| Area | Location / behavior |
+|------|---------------------|
+| Renderer | `src/App.tsx`, `src/components/TranslationEditor.tsx`, `src/components/LlmConfigModal.tsx` |
+| Electron main | `electron/main.ts` (IPC, window), `electron/translateService.ts`, `electron/llmUserSettings.ts`, `electron/importDocument.ts`, `electron/env.ts` |
+| Preload API | `electron/preload.cjs` → typed in `src/translator-desktop.d.ts` |
+| Main bundle | `scripts/build-electron-main.mjs` (esbuild ESM); **mammoth**, **word-extractor**, **pdf-parse** are **`external`** so CJS `require("fs")` inside those packages works at runtime |
+
+### Document model (Sections 3–3.7)
+
+- **Implemented** in `src/core/types.ts`, `src/core/documentModel.ts`, `src/core/documentMeta.ts`, `src/core/canonical.ts`, `src/core/sourceHash.ts`.
+- **`DocumentRoot`**: `type: "document"`, `schemaVersion`, `meta`, `children[]`.
+- **`meta`**: `title`, `sourceLang`, **`targetLangs: string[]`**, **`activeTargetLang`** (multi-target + active pane; design examples that only show `targetLang` should be read as superseded for this product).
+- **`Block`**: `id`, `type`, `structural`, `inline[]`, `translationMeta`, optional **`targetsByLang`**, legacy **`targetInline`**, **`lastEditedSide`**, **`contentEpoch`**, **`targetProvenance`**—enough surface for Section 4.1-style data, even where the UI does not use it yet.
+- **`sourceHash`**: SHA-256 over canonical text + langs + `PROMPT_VERSION` + block type + structural policy key (`computeSourceHash` / `translationHashPayload`).
+- **Helpers**: `createInitialDocument`, `normalizeDocumentRoot`, `createParagraphBlock`, `setBlockPlainText`, `setBlockMachineTranslation`, `setBlockTranslationMeta`, **`buildDocumentFromImportedText`** (split paragraphs on blank lines `\n{2,}`, preserve `meta` language fields from prior doc).
+
+### Editor UI (Section 4)
+
+- **Side-by-side panes** with **block-id scroll sync** (`data-block-id`, anchor by block) — **implemented**.
+- **Source**: one **`<textarea>` per block** editing **canonical plain text** (not a rich-text ProseMirror/Lexical binding).
+- **Target**: **read-only** mirrored row showing translation or dimmed source placeholder; **not** an editable Hindi surface in the UI (Section 4.1 **bidirectional / editable target** is **not** wired in `TranslationEditor`).
+- **Target language**: dropdown from `src/core/indianLanguages.ts` plus fonts (`targetLangFonts.ts`).
+
+### Change pipeline (Section 5)
+
+- **Per-block debounce** `DEBOUNCE_MS` (2000 ms) on source edits → **`runForward`** — **implemented**.
+- **Stale supersede** using `sourceHash` and in-flight plain-text snapshot — **implemented** in `TranslationEditor` forward path.
+- **Import**: after `flushSync(setDoc(...))`, **immediate** `runForward` for each non-empty block (**no** debounce) so imported documents start translating at once.
+- **Completeness gate** (`src/core/completenessGate.ts`, Stage A heuristics + Stage B stub): **implemented as a module** but **not called** from `TranslationEditor` today—forward translation runs on **non-empty trimmed** text without `shouldTranslate`.
+
+### Translation service & LLM (Section 7)
+
+- **Not** a browser `POST /translate` to a separate Node server in the default desktop flow: **`translateOne` / `translateBatch`** in `src/core/translationFetch.ts` call **`window.translatorDesktop.translate`** / **`translateBatch`** (IPC).
+- **`electron/translateService.ts`**: validates requests, **`ServerLLMAdapter`** implementations — **Gemini** (`server/llm/geminiAdapter.ts`), **OpenAI**, **Ollama** (`ollamaAdapter.ts`), **Mock**; provider from saved user settings + env (`LLM_PROVIDER`, keys, `OLLAMA_*`).
+- **Caching**: client **LRU** in `TranslationEditor` + server LRU in `translateService` (separate sizes).
+- **Context**: `previousBlockText` / `nextBlockText` passed on forward requests — **implemented**.
+- **`desktop:translate-batch`**: processes an array **sequentially** in the main process—**not** a single merged LLM prompt for multiple blocks.
+- **Listing models**: **`desktop:list-gemini-models`**, **`desktop:list-ollama-models`** (Ollama **`GET /api/tags`**); UI in `LlmConfigModal.tsx` (Gemini list + Ollama listbox + save).
+- **Debug**: `getDebugInfo`, `debugLlmPing`, `getConfig` IPC; `src/core/debugPing.ts` for ping copy.
+
+### Document import (related to Section 3.4)
+
+- **IPC** `desktop:import-document`: native file dialog → parse → `{ title, plainText }`.
+- **Formats**: plain text (`.txt`, `.md`, `.csv`, `.log`, `.json` UTF-8), **`.docx`** (mammoth raw text), **`.doc`** (word-extractor), **`.pdf`** (pdf-parse **v2** `PDFParse` + `getText()`).
+
+### Observability (Section 8)
+
+- **`src/core/observability.ts`** — structured `logTranslation` events from the client pipeline (forward run, cache hit, stale drop, errors). Full retry/backpressure/offline banner behavior from Section 8 is only **partially** realized (e.g. offline banner on failure).
+
+### Gaps vs this document (short list)
+
+- Rich **inline styles** in the live editor (Section 3.5–3.6 examples): model supports **`styles`**, but the **current UI** is plain-text paragraphs only.
+- **Completeness gate** not integrated into dispatch.
+- **Editable Hindi / reverse pipeline** (Section 4.1): types and document helpers exist; **no** reverse debounce or target editing in `TranslationEditor`.
+- **Server-side batching** as one LLM call per coalesced window (Section 7): not implemented; batch IPC is multi-request convenience.
+- **Streaming** target updates: not implemented.
+
+---
 
 ## 1. Design Approach (how we will proceed)
 
@@ -104,6 +167,8 @@ flowchart LR
     DocModel --> StyleMirror --> TgtPane
 ```
 
+**As implemented (desktop):** The boxes **Translate API** / **Batcher** map to **Electron IPC** (`desktop:translate`, `desktop:translate-batch`) and **`translateService`** in the main process; there is no separate long-lived HTTP server in the default app. The renderer’s **Dispatcher** is the logic in **`TranslationEditor`** (debounce timers + `runForward`). **Semantic Completeness Gate** exists as **`completenessGate.ts`** but is **not** yet in the dispatch path—see **§ Implementation status**.
+
 ## 3. Document Model
 
 The **document model** is the single source of truth for what the user sees and edits. Everything else—the source editor view, the Hindi mirror view, the debouncer, the translation cache—is either a **projection** of this model or **metadata** keyed off it. If the model is clear and stable, the rest of the system stays simple.
@@ -123,7 +188,7 @@ Read this subsection once; each **Tiny example** is minimal on purpose. **Sectio
 
 #### 3.2.1 Document root
 
-The **document root** is the top node of the tree. It does not hold paragraph text itself. It holds **document-level metadata** (for example title, `sourceLang` / `targetLang`, optional revision id) and an **ordered list of child blocks** in reading order.
+The **document root** is the top node of the tree. It does not hold paragraph text itself. It holds **document-level metadata** (for example title, `sourceLang`, **`targetLangs` / `activeTargetLang`** in the shipped app—older sketches may say only `targetLang`) and an **ordered list of child blocks** in reading order.
 
 **Tiny example (root only):** metadata plus an empty list of children (no blocks yet).
 
@@ -636,6 +701,8 @@ So far this plan has defined **structure and language-bearing text** (Section 3)
 - Scroll-sync by block ID, not by pixel, so font differences between English and Devanagari do not break alignment.
 - Styling is mirrored on the forward path (English → Hindi display), not re-inferred from the LLM. **Reverse** updates (Hindi → English) need their own rules for how much structure is preserved (Section 4.1).
 
+*Implementation today (Electron app):* the left pane is **one `<textarea>` per block** (canonical plain text), not a bound rich-text editor; the right pane is **read-only** (machine translation or dimmed source + “Translating…”). **`targetInline`** / editable Hindi are not exposed in the UI yet—see **§ Implementation status**.
+
 ### 4.1 Bidirectional editing (editable Hindi; source must reflect it)
 
 **Requirement:** The **generated Hindi** is editable, and edits should **update the English source** so both panes stay consistent with one **logical** document per `block.id`.
@@ -715,7 +782,7 @@ flowchart TD
 Key points:
 - **Immediate local refresh**: the source pane never waits for translation. Only the target pane's changed block shows a pending state. This satisfies the "very low latency, refresh with local content" requirement.
 - **Per-block debounce**: 2 seconds of inactivity on a specific block before dispatch. Editing another block resets only that other block's timer.
-- **Semantic completeness gate**: before dispatching, a lightweight local heuristic decides if the block is "sentence-shaped." If it is likely mid-thought, we keep waiting. Section 6 defines the two-stage gate.
+- **Semantic completeness gate**: before dispatching, a lightweight local heuristic decides if the block is "sentence-shaped." If it is likely mid-thought, we keep waiting. Section 6 defines the two-stage gate. *(**Shipped code:** `completenessGate.ts` implements Stage A + a no-op Stage B; the **editor pipeline does not call it yet**—see § Implementation status.)*
 - **Stale supersede**: if a new edit arrives while a translation is in flight for the same block, the in-flight result is discarded (by comparing `hash` at apply time).
 - **Merge and split**: structural joins or splits emit explicit events (see **Section 3.9**). The dispatcher **cancels** timers and in-flight jobs for **removed** `blockId`s so merged text is never paired with Hindi that belonged only to the old first paragraph.
 - **Bidirectional mode (Section 4.1):** Maintain a **reverse** path (Hindi edit → debounce → reverse translate → update English `inline`) with the same stale-supersede pattern using **`sourceHash` + `targetHash`** (or epoch). **Cancel or serialize** against the forward path per block so two jobs do not clobber each other without a defined order.
@@ -723,6 +790,8 @@ Key points:
 ## 6. Semantic Completeness Gate
 
 Section 5 placed a **completeness** decision in the pipeline before dispatch. Here we spell out what “complete enough to translate” means: avoid **mid-sentence garbage** and obvious work-in-progress using a two-stage **cheap-then-smart** check. **Stage A** runs on every candidate block; **Stage B** runs only when Stage A is ambiguous or you want extra safety. Both can start as **client-only** logic; the gate stays behind one interface so heuristics can evolve without rewriting the pipeline.
+
+**Repository note:** `completenessGateStageA` / `createDefaultCompletenessGate` live in `src/core/completenessGate.ts`. **`completenessGateStageB`** currently always returns **`translate`** (embedding-based ambiguity was disabled to avoid blocking re-translation after small edits). The **TranslationEditor** does not yet invoke the gate before dispatch.
 
 **Stage A - local heuristics (free, instant):**
 - Block ends with terminal punctuation `. ! ? | ।` or is a complete list item / heading.
@@ -758,8 +827,10 @@ POST /translate
 -> { blockId, translation, modelVersion, latencyMs }
 ```
 
+**As implemented:** The desktop app uses the same **payload shape** (`TranslateRequest` / `TranslateResponse` in `src/core/types.ts`) over **IPC**, not necessarily a public HTTP route. **`translateBatch`** returns one response per request; the main process invokes the adapter **once per item** (not one coalesced prompt).
+
 Features:
-- **Batching/coalescing**: if several blocks become eligible within a short window, batch them into one LLM call to reduce round-trips.
+- **Batching/coalescing**: if several blocks become eligible within a short window, batch them into one LLM call to reduce round-trips. *(Design target; **not** implemented—the IPC batch handler runs **sequential** per-block adapter calls.)*
 - **Context window**: include neighboring blocks as context-only (not to be translated) so Hindi output is coherent across blocks.
 - **Caching**: server-side cache keyed by **SHA-256** (Secure Hash Algorithm 256-bit) over `text + sourceLang + targetLang + modelVersion`; client-side **LRU** (least-recently-used) eviction cache keyed the same way so memory stays bounded. Reopening a document whose blocks are unchanged should cost **zero** new LLM calls on cache hit.
 - **Adapter pattern**: `LLMAdapter` interface with implementations `OpenAIAdapter`, `LocalLlamaAdapter`, `MockAdapter` (for tests). Dependency-injected.
@@ -773,7 +844,7 @@ The service sketch in Section 7 must still behave when the network or model is s
 - **Backpressure**: a bounded in-flight queue per client; excess jobs are dropped in favor of the latest hash per blockId.
 - **Retry with jitter** on transient LLM failures; after N retries the block is marked `error` in the target pane with a retry affordance.
 - **Offline mode**: if the LLM is unreachable, target pane shows last-known translation plus a banner. Source editing never blocks.
-- **Observability**: structured logs for each job (blockId, decision, gate outcome, cache hit, latency). Basic metrics: translations per minute, cache hit rate, gate rejection rate, and **p95** end-to-end latency (95th percentile: the slowest 5% of requests are slower than this threshold).
+- **Observability**: structured logs for each job (blockId, decision, cache hit, latency) via **`logTranslation`** in `src/core/observability.ts`. Gate outcome is **not** logged until the gate is wired. Metrics (TPM, cache hit rate, gate rejection rate, p95) remain **future** work.
 
 ## 9. Core Interfaces (sketch, language-agnostic)
 
@@ -811,15 +882,17 @@ interface LLMAdapter {
 
 ## 10. Deliverables of this design phase
 
-With Sections 1–9 in place, the remaining work is **execution planning** (concrete stacks and milestones) and resolving the open decisions in Section 11.
+The original design-phase checklist is largely satisfied by the **Electron + React** app described in **§ Implementation status**. Ongoing work is called out there (completeness integration, rich editor, true batch coalescing, bidirectional UI, streaming).
 
-- This architectural plan (saved).
-- A follow-up implementation plan that picks concrete tech (e.g. React + Lexical on the client, FastAPI/Node on the server, OpenAI or local Llama as first LLM adapter).
-- A minimal vertical slice milestone: single-paragraph English pane, single-paragraph Hindi pane, mock LLM, debounced pipeline, block-level cache. This proves the architecture before expanding to styling, tables, and streaming.
+- This architectural plan (updated with as-built notes).
+- **Shipped:** vertical slice with **multi-block** plain-text source, read-only target, **debounced** forward translation, **import** (text / Word / PDF), **stale** handling, **client + main-process** LRU caches, **Gemini / OpenAI / Ollama / Mock** adapters, **model listing** for Gemini and Ollama, persisted **LLM user settings**.
+- **Still open for product polish:** Lexical/ProseMirror-style rich editing, wiring **CompletenessGate** into dispatch, editable target + reverse sync (Section 4.1), server batch coalescing, streaming, stronger robustness (Section 8).
 
-## 11. Open Questions (to answer before implementation)
+## 11. Open Questions (remaining product decisions)
 
-- Preferred client stack (React + Lexical / ProseMirror / Slate)?
-- Preferred LLM provider for v1 (hosted API vs local model)?
-- **Bidirectional editing (Section 4.1):** If Hindi is editable, choose **conflict policy** (last-write-wins, queue, or per-block lock) and **how aggressively** to restore English **`styles`** after reverse translate (plain-text MVP vs structured parse vs alignment).
-- Expected document size range (affects batching and virtualization strategy)?
+Several items from the original list are **resolved** for v0 of this repo: **client stack** (React + Vite), **desktop shell** (Electron), **first providers** (Gemini, OpenAI, Ollama, Mock). Remaining questions:
+
+- **Rich text editor:** adopt Lexical, ProseMirror, or Slate and map to **`inline` + `styles`** (Section 3.10)?
+- **Bidirectional editing (Section 4.1):** enable editable Hindi in the UI; choose **conflict policy** and how aggressively to restore English **`styles`** after reverse translate.
+- **Completeness gate:** wire **`createDefaultCompletenessGate()`** (or tuned variant) into **`TranslationEditor`** before `runForward`; decide whether to revive **Stage B** (embeddings / similarity) without blocking small edits.
+- **Expected document size range** (virtualization, import chunking, and whether parallel `runForward` for many blocks needs throttling)?

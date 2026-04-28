@@ -60,7 +60,14 @@ export type ImportDocumentResult =
   | { ok: true; filePath: string; title: string; plainText: string }
   | { ok: false; error: string };
 
+export interface TranslatorShellAPI {
+  minimizeWindow(): Promise<void>;
+  maximizeToggle(): Promise<void>;
+  closeWindow(): Promise<void>;
+}
+
 export interface TranslatorDesktopAPI {
+  shell?: TranslatorShellAPI;
   getConfig(): Promise<{ modelVersion: string }>;
   getDebugInfo(): Promise<TranslatorDebugInfo>;
   debugLlmPing(): Promise<TranslatorDebugLlmPingResult>;
@@ -75,7 +82,7 @@ export interface TranslatorDesktopAPI {
 
 declare global {
   interface Window {
-    translatorDesktop: TranslatorDesktopAPI;
+    translatorDesktop?: TranslatorDesktopAPI;
   }
 }
 

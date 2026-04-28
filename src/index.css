@@ -475,9 +475,9 @@ code {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  max-width: 1480px;
-  margin: 0 auto;
-  padding: 1rem 1.5rem 1.25rem;
+  max-width: none;
+  margin: 0;
+  padding: 0;
   box-sizing: border-box;
 }
 
@@ -546,7 +546,7 @@ code {
   grid-template-columns: 1.22fr 1fr;
   gap: 1.25rem;
   align-items: stretch;
-  min-height: calc(100vh - 10.5rem);
+  min-height: 0;
   min-width: 0;
 }
 
@@ -568,9 +568,10 @@ code {
 
 .translation-editor-v2 .pane-scroll {
   flex: 1;
-  min-height: min(72vh, 820px);
-  max-height: calc(100vh - 10rem);
+  min-height: 0;
+  max-height: none;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   border: 1px solid #cbd5e1;
   border-radius: 12px;
   background: #fff;
@@ -596,36 +597,57 @@ code {
   font-family: Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
 }
 
+/* Per-block “page” chrome: match MUI OutlinedInput frame on source and mirror on target */
+.translation-editor-v2 .doc-block .MuiOutlinedInput-root {
+  background-color: #fafafa;
+  border-radius: 10px;
+}
+
+.translation-editor-v2 .doc-block .MuiOutlinedInput-notchedOutline {
+  border-color: rgba(15, 23, 42, 0.16) !important;
+  border-width: 1px;
+}
+
+.translation-editor-v2 .doc-block .MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline {
+  border-color: rgba(15, 23, 42, 0.26) !important;
+}
+
+.translation-editor-v2 .doc-block .MuiOutlinedInput-root.Mui-focused .MuiOutlinedInput-notchedOutline {
+  border-color: #93c5fd !important;
+  border-width: 1px;
+}
+
+.translation-editor-v2 .doc-block .MuiOutlinedInput-root .source-doc-input {
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
 .translation-editor-v2 .source-doc-input {
   width: 100%;
-  min-height: min(58vh, 640px);
-  padding: 1rem 1.1rem;
+  min-height: 10rem;
   font: inherit;
   font-size: 1.08rem;
   line-height: 1.65;
-  border-radius: 10px;
-  border: 1px solid #e2e8f0;
   resize: vertical;
-  background: #fafafa;
   color: #0f172a;
 }
 
-.translation-editor-v2 .source-doc-input:focus {
-  outline: 2px solid #93c5fd;
-  outline-offset: 1px;
-  border-color: #93c5fd;
-  background: #fff;
-}
-
 .translation-editor-v2 .target-readonly.doc-translation {
-  min-height: min(58vh, 640px);
-  padding: 1rem 1.1rem;
+  min-height: 10rem;
+  padding: 14px 16px;
   border-radius: 10px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(15, 23, 42, 0.16);
   background: #fafafa;
+  box-sizing: border-box;
   white-space: pre-wrap;
   word-wrap: break-word;
   line-height: 1.65;
+}
+
+.translation-editor-v2 .target-readonly.doc-translation.dim {
+  border-color: rgba(15, 23, 42, 0.12);
 }
 
 .translation-editor-v2 .target-readonly.dim {
@@ -852,11 +874,11 @@ code {
 @media (max-width: 900px) {
   .translation-editor-v2 .panes-v2 {
     grid-template-columns: 1fr;
-    min-height: auto;
+    min-height: 0;
   }
 
   .translation-editor-v2 .source-doc-input,
   .translation-editor-v2 .target-readonly.doc-translation {
-    min-height: 40vh;
+    min-height: 9rem;
   }
 }

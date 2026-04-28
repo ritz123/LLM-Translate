@@ -1,0 +1,64 @@
+---
+description: Desktop UI—Electron without extra UI server, frameless window, 5s splash, Material + React, stable ids, modular code.
+globs: "electron/**/*,src/**/*.{tsx,css}"
+alwaysApply: true
+---
+
+# Desktop UI (Electron + React)
+
+Apply in every session (`alwaysApply: true`). Primary scope: Electron shell, preload, and renderer UI in `electron/` and `src/**/*.tsx` / `src/**/*.css`.
+
+## 1. Electron without an app-owned HTTP server
+
+- Treat the **renderer as the UI source of truth**: Vite in dev, static `file://` or packaged assets in production.
+- **Do not** start a separate Node HTTP server in `main` just to serve the desktop UI unless there is a documented, unavoidable reason.
+- Use **preload + `contextBridge`** for privileged APIs; keep the main process thin (window lifecycle, native dialogs, IPC routing).
+
+## 2. Frameless top-level window
+
+- Use **`frame: false`** (and related options like `titleBarStyle` / `titleBarOverlay` only where they match platform goals) on the primary `BrowserWindow` so the native chrome is hidden.
+- If users need window drag/close: implement a **custom title bar** in React with `-webkit-app-region: drag` on the drag zone and `no-drag` on controls.
+
+## 3. Startup splash (5 seconds)
+
+- Show a **dedicated splash window or splash route** on launch with clear branding and a polished (e.g. subtle shimmer or progress) treatment.
+- Keep the splash **visible for 5 seconds** before revealing the main window/route, unless startup hard-fails—in that case, show an error state **on or after** the splash so users are not left on a blank shell.
+- Transition smoothly to the main UI (fade or cross-fade).
+
+## 4. React and modern UI stack
+
+- **Renderer**: React + TypeScript; keep state and side effects predictable (hooks, small components).
+- Prefer **Vite**-aligned patterns already in the repo; avoid ad-hoc global script UI.
+
+## 5. Google Material Design
+
+- Use **Material Design 3**-aligned components (e.g. **MUI** with the MD3 theme, or another maintained Material stack the project adopts).
+- Follow Material guidance for **elevation, shape, typography scale, and motion**; avoid mixing unrelated design systems on the same screen without a clear reason.
+
+## 6. Stable `id` on UI entities
+
+- Every **meaningful** interactive or landmark element should have a **stable `id`** (kebab-case or a consistent prefix scheme, e.g. `splash-brand`, `main-open-settings`).
+- Use the same IDs in **Electron** windows where applicable (`webPreferences` / devtools debugging).
+- Prefer **no duplicate `id`s** in the same document; for lists, use a **prefix + row key** pattern (`segment-row-${id}`).
+
+```tsx
+// ✅ GOOD — explicit id for automation and docs
+<Button id="llm-config-save" variant="contained">Save</Button>
+
+// ❌ BAD — no stable hook for tests or support
+<Button variant="contained">Save</Button>
+```
+
+## 7. Modular structure
+
+- **Electron**: split `main` bootstrap, window factory, splash vs main window, and IPC handlers into **small modules** under `electron/` (one concern per file).
+- **Renderer**: group by feature (`components/`, `core/`) with **colocated types/helpers**; avoid mega-files; extract hooks and presentational components.
+- **IPC**: define channel names and payload types in a **shared module** imported by preload and main (or duplicated types with a single source of truth) to avoid string drift.
+
+## Self-check before finishing a change
+
+- [ ] No extra desktop HTTP server unless justified.
+- [ ] Primary window remains frameless per product direction.
+- [ ] Splash shows for **5 seconds** before main UI unless overridden by a documented error path.
+- [ ] New or touched interactive UI has **stable `id`s**.
+- [ ] New UI uses **Material**-aligned components/tokens.

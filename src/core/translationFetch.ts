@@ -1,7 +1,8 @@
 import type { TranslateBatchResponse, TranslateRequest, TranslateResponse } from "./types";
+import type { TranslatorDesktopAPI } from "../translator-desktop";
 import { logTranslation } from "./observability";
 
-function getDesktop(): Window["translatorDesktop"] {
+function getDesktop(): TranslatorDesktopAPI {
   if (typeof window === "undefined" || !window.translatorDesktop) {
     throw new Error("translatorDesktop API missing — run inside the Electron app");
   }

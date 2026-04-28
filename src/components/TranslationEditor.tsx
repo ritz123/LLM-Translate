@@ -1,5 +1,21 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import {
+  Alert,
+  AppBar,
+  Box,
+  Button,
+  MenuItem,
+  Paper,
+  Select,
+  Toolbar,
+  Tooltip,
+  Typography,
+  TextField,
+} from "@mui/material";
+import FileUploadOutlined from "@mui/icons-material/FileUploadOutlined";
+import LanguageOutlined from "@mui/icons-material/LanguageOutlined";
+import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import {
   buildDocumentFromImportedText,
   createInitialDocument,
@@ -17,11 +33,18 @@ import { translateOne } from "@core/translationFetch";
 import { logTranslation } from "@core/observability";
 import { normalizeDocumentMeta } from "@core/documentMeta";
 import { INDIAN_TARGET_LANGUAGE_OPTIONS, labelForTargetLang } from "@core/indianLanguages";
+import { collectVisibleBlockIds, isLazyTranslationDocument } from "@core/lazyTranslation";
 import { targetScriptClassForLang } from "@core/targetLangFonts";
+import { selectMenuProps } from "../ui/selectMenuProps";
+import { TOOLBAR_CONTROL_HEIGHT_PX, toolbarButtonSx } from "../ui/toolbarChrome";
+import DesktopTitleBar from "./DesktopTitleBar";
 import LlmConfigModal from "./LlmConfigModal";
 
 const BASE = "";
 const DEBOUNCE_MS = 2000;
+
+/** Same floor height for each source/target pair so both panes use matched “page” rows. */
+const DOC_BLOCK_PAIR_MIN_HEIGHT = "clamp(11.5rem, 26vh, 22rem)";
 
 const fwdAbortKey = (blockId: string, lang: string) => `${blockId}::${lang}`;
 
@@ -35,21 +58,69 @@ function abortAllForwardForBlock(map: Map<string, AbortController>, blockId: str
   }
 }
 
-function anchorBlockId(container: HTMLElement, scrollTop: number): string | null {
-  const nodes = container.querySelectorAll<HTMLElement>("[data-block-id]");
-  for (const el of nodes) {
-    const top = el.offsetTop;
-    const bottom = top + el.offsetHeight;
-    if (bottom > scrollTop + 2) {
-      return el.dataset.blockId ?? null;
-    }
-  }
-  return null;
+/** Map scroll position from `leader` to `follower` by scrollable ratio (fallback when total heights still differ). */
+function syncScrollProportionally(leader: HTMLElement, follower: HTMLElement): void {
+  const leadMax = Math.max(0, leader.scrollHeight - leader.clientHeight);
+  const followMax = Math.max(0, follower.scrollHeight - follower.clientHeight);
+  const ratio = leadMax > 0 ? leader.scrollTop / leadMax : 0;
+  follower.scrollTop = ratio * followMax;
 }
 
-function scrollPaneToBlock(container: HTMLElement, blockId: string): void {
-  const el = container.querySelector<HTMLElement>(`[data-block-id="${blockId}"]`);
-  if (el) container.scrollTop = el.offsetTop;
+/** Same scroll pixel when both columns have (nearly) the same scroll height — paired rows are equalized for this. */
+function syncScrollInUnison(leader: HTMLElement, follower: HTMLElement): void {
+  const leadMax = Math.max(0, leader.scrollHeight - leader.clientHeight);
+  const followMax = Math.max(0, follower.scrollHeight - follower.clientHeight);
+  if (leadMax === 0 && followMax === 0) return;
+  const dh = Math.abs(leader.scrollHeight - follower.scrollHeight);
+  if (dh <= 2) {
+    follower.scrollTop = Math.min(followMax, Math.max(0, leader.scrollTop));
+  } else {
+    syncScrollProportionally(leader, follower);
+  }
+}
+
+function clampScrollTop(el: HTMLElement): void {
+  const max = Math.max(0, el.scrollHeight - el.clientHeight);
+  if (el.scrollTop > max) el.scrollTop = max;
+}
+
+function indexDocBlockArticles(root: HTMLElement): Map<string, HTMLElement> {
+  const m = new Map<string, HTMLElement>();
+  for (const el of root.querySelectorAll<HTMLElement>("article.doc-block")) {
+    const id = el.getAttribute("data-block-id");
+    if (id) m.set(id, el);
+  }
+  return m;
+}
+
+/** Set each source/target `article.doc-block` pair to the same height so both panes scroll in lockstep. */
+function equalizePairedBlockHeights(
+  srcRoot: HTMLElement | null,
+  tgtRoot: HTMLElement | null,
+  blockIds: readonly string[],
+): void {
+  if (!srcRoot || !tgtRoot) return;
+
+  const srcMap = indexDocBlockArticles(srcRoot);
+  const tgtMap = indexDocBlockArticles(tgtRoot);
+
+  for (const id of blockIds) {
+    const s = srcMap.get(id);
+    const t = tgtMap.get(id);
+    if (s) s.style.minHeight = "";
+    if (t) t.style.minHeight = "";
+  }
+
+  void srcRoot.offsetHeight;
+
+  for (const id of blockIds) {
+    const s = srcMap.get(id);
+    const t = tgtMap.get(id);
+    if (!s || !t) continue;
+    const h = Math.ceil(Math.max(s.offsetHeight, t.offsetHeight));
+    s.style.minHeight = `${h}px`;
+    t.style.minHeight = `${h}px`;
+  }
 }
 
 export default function TranslationEditor() {
@@ -64,7 +135,11 @@ export default function TranslationEditor() {
   const srcScrollRef = useRef<HTMLDivElement>(null);
   const tgtScrollRef = useRef<HTMLDivElement>(null);
   const syncingScroll = useRef(false);
+  const equalizeRafRef = useRef(0);
   const forwardSentPlainRef = useRef(new Map<string, string>());
+  const scheduleForwardRef = useRef<(blockId: string) => void>(() => {});
+  const childIdsKey = doc.children.map((b) => b.id).join(",");
+  const isLazyDoc = isLazyTranslationDocument(doc.children.length);
 
   const cancelForwardDebounce = useCallback((blockId: string) => {
     const t = debounceFwd.current.get(blockId);
@@ -229,6 +304,32 @@ export default function TranslationEditor() {
     [cancelForwardDebounce, runForward],
   );
 
+  scheduleForwardRef.current = scheduleForward;
+
+  useLayoutEffect(() => {
+    if (!isLazyDoc) return;
+    const root = srcScrollRef.current;
+    if (!root) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const ent of entries) {
+          if (!ent.isIntersecting) continue;
+          const el = ent.target as HTMLElement;
+          const id = el.dataset.blockId;
+          if (!id) continue;
+          const b = getBlock(docRef.current, id);
+          if (!b || !canonicalPlainText(b).trim()) continue;
+          scheduleForwardRef.current(id);
+        }
+      },
+      { root, rootMargin: "160px 0px 320px 0px", threshold: 0.01 },
+    );
+    for (const el of root.querySelectorAll<HTMLElement>("[data-block-id]")) {
+      io.observe(el);
+    }
+    return () => io.disconnect();
+  }, [isLazyDoc, childIdsKey]);
+
   const onSourceChange = (blockId: string, text: string) => {
     setOffline(false);
     setDoc((d) => setBlockPlainText(d, blockId, text));
@@ -238,6 +339,17 @@ export default function TranslationEditor() {
   const scheduleAllBlocks = useCallback(() => {
     const d = docRef.current;
     setOffline(false);
+    if (isLazyTranslationDocument(d.children.length)) {
+      const root = srcScrollRef.current;
+      const visible = root ? collectVisibleBlockIds(root) : [];
+      for (const id of visible) {
+        cancelForwardDebounce(id);
+        const b = getBlock(d, id);
+        if (!b || !canonicalPlainText(b).trim()) continue;
+        scheduleForward(id);
+      }
+      return;
+    }
     for (const b of d.children) {
       cancelForwardDebounce(b.id);
       if (!canonicalPlainText(b).trim()) continue;
@@ -281,10 +393,23 @@ export default function TranslationEditor() {
     flushSync(() => {
       setDoc(nextDoc);
     });
-    for (const b of nextDoc.children) {
-      if (!canonicalPlainText(b).trim()) continue;
-      cancelForwardDebounce(b.id);
-      void runForward(b.id);
+    if (isLazyTranslationDocument(nextDoc.children.length)) {
+      requestAnimationFrame(() => {
+        const root = srcScrollRef.current;
+        if (!root) return;
+        for (const id of collectVisibleBlockIds(root)) {
+          const b = getBlock(docRef.current, id);
+          if (!b || !canonicalPlainText(b).trim()) continue;
+          cancelForwardDebounce(id);
+          void runForward(id);
+        }
+      });
+    } else {
+      for (const b of nextDoc.children) {
+        if (!canonicalPlainText(b).trim()) continue;
+        cancelForwardDebounce(b.id);
+        void runForward(b.id);
+      }
     }
   }, [flushForwardSchedulers, cancelForwardDebounce, runForward]);
 
@@ -311,14 +436,66 @@ export default function TranslationEditor() {
     [scheduleAllBlocks],
   );
 
+  const scheduleEqualizePairedHeights = useCallback(() => {
+    if (equalizeRafRef.current !== 0) cancelAnimationFrame(equalizeRafRef.current);
+    equalizeRafRef.current = requestAnimationFrame(() => {
+      equalizeRafRef.current = 0;
+      equalizePairedBlockHeights(
+        srcScrollRef.current,
+        tgtScrollRef.current,
+        docRef.current.children.map((c) => c.id),
+      );
+      const src = srcScrollRef.current;
+      const tgt = tgtScrollRef.current;
+      if (src && tgt) {
+        syncingScroll.current = true;
+        clampScrollTop(src);
+        syncScrollInUnison(src, tgt);
+        requestAnimationFrame(() => {
+          syncingScroll.current = false;
+        });
+      }
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    const srcRoot = srcScrollRef.current;
+    const tgtRoot = tgtScrollRef.current;
+    if (!srcRoot || !tgtRoot) return undefined;
+
+    const blockIds = childIdsKey.length > 0 ? childIdsKey.split(",") : [];
+
+    scheduleEqualizePairedHeights();
+
+    const ro = new ResizeObserver(() => {
+      scheduleEqualizePairedHeights();
+    });
+    ro.observe(srcRoot);
+    ro.observe(tgtRoot);
+    for (const el of srcRoot.querySelectorAll("article.doc-block")) ro.observe(el);
+    for (const el of tgtRoot.querySelectorAll("article.doc-block")) ro.observe(el);
+
+    return () => {
+      ro.disconnect();
+      if (equalizeRafRef.current !== 0) cancelAnimationFrame(equalizeRafRef.current);
+      equalizeRafRef.current = 0;
+      const srcMap = indexDocBlockArticles(srcRoot);
+      const tgtMap = indexDocBlockArticles(tgtRoot);
+      for (const id of blockIds) {
+        const s = srcMap.get(id);
+        const t = tgtMap.get(id);
+        if (s) s.style.minHeight = "";
+        if (t) t.style.minHeight = "";
+      }
+    };
+  }, [childIdsKey, scheduleEqualizePairedHeights]);
+
   const onSrcScroll = () => {
     const src = srcScrollRef.current;
     const tgt = tgtScrollRef.current;
     if (!src || !tgt || syncingScroll.current) return;
-    const id = anchorBlockId(src, src.scrollTop);
-    if (!id) return;
     syncingScroll.current = true;
-    scrollPaneToBlock(tgt, id);
+    syncScrollInUnison(src, tgt);
     requestAnimationFrame(() => {
       syncingScroll.current = false;
     });
@@ -328,10 +505,8 @@ export default function TranslationEditor() {
     const src = srcScrollRef.current;
     const tgt = tgtScrollRef.current;
     if (!src || !tgt || syncingScroll.current) return;
-    const id = anchorBlockId(tgt, tgt.scrollTop);
-    if (!id) return;
     syncingScroll.current = true;
-    scrollPaneToBlock(src, id);
+    syncScrollInUnison(tgt, src);
     requestAnimationFrame(() => {
       syncingScroll.current = false;
     });
@@ -341,113 +516,361 @@ export default function TranslationEditor() {
   const targetTextDir = doc.meta.activeTargetLang === "ur" ? "rtl" : "ltr";
 
   return (
-    <div className="translation-editor translation-editor-v2">
-      <header className="app-header">
-        <h1 className="app-title">Translator</h1>
-        <div className="app-header-actions">
-          <button type="button" className="btn-config" onClick={() => void onImportDocument()}>
-            Import document…
-          </button>
-          <button type="button" className="btn-config" onClick={() => setConfigOpen(true)}>
-            Configuration
-          </button>
-          <fieldset className="lang-targets-inline">
-            <label htmlFor="target-lang-select" className="sr-only">
-              Target language
-            </label>
-            <select
-              id="target-lang-select"
-              className={`target-lang-font ${targetFontClass}`}
-              aria-label="Target language"
-              dir={targetTextDir}
-              value={doc.meta.activeTargetLang}
-              onChange={(e) => setTargetLanguageDropdown(e.target.value)}
-            >
-              {!INDIAN_TARGET_LANGUAGE_OPTIONS.some((o) => o.code === doc.meta.activeTargetLang) && (
-                <option value={doc.meta.activeTargetLang}>
-                  {labelForTargetLang(doc.meta.activeTargetLang)} ({doc.meta.activeTargetLang})
-                </option>
-              )}
-              {INDIAN_TARGET_LANGUAGE_OPTIONS.map((o) => (
-                <option key={o.code} value={o.code}>
-                  {o.label} ({o.code})
-                </option>
-              ))}
-            </select>
-          </fieldset>
-        </div>
-      </header>
-
-      <p className="app-subline">
-        Source updates as you type. Translation runs automatically <strong>{DEBOUNCE_MS / 1000}s</strong> after you stop
-        editing a paragraph (non-empty text only).
-      </p>
-
-      {offline && (
-        <div className="offline-banner" role="status">
-          Translation failed — use <strong>Configuration</strong> to set the LLM provider and keys, then edit again to
-          retry after {DEBOUNCE_MS / 1000}s, or change a character to re-schedule.
-        </div>
-      )}
-
-      <div className="panes panes-v2">
-        <section className="pane pane-source doc-prose" aria-label="Source text">
-          <div className="pane-label">Source</div>
-          <div ref={srcScrollRef} className="pane-scroll pane-scroll-source" onScroll={onSrcScroll}>
-            {doc.children.map((b, i) => (
-              <article key={b.id} className="doc-block" data-block-id={b.id}>
-                <textarea
-                  className="source-doc-input"
-                  aria-label={`Source paragraph ${i + 1}`}
-                  value={canonicalPlainText(b)}
-                  onChange={(e) => onSourceChange(b.id, e.target.value)}
-                  spellCheck
-                />
-              </article>
-            ))}
-          </div>
-        </section>
-        <section
-          className={`pane pane-target doc-prose pane-target-pane ${targetFontClass}`}
-          aria-label="Translation"
-          lang={doc.meta.activeTargetLang}
+    <Box
+      id="translation-editor-root"
+      className="translation-editor translation-editor-v2"
+      sx={{
+        height: "100vh",
+        maxHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
+      <AppBar id="app-top-bar" position="static" color="default" elevation={1} sx={{ flexShrink: 0 }}>
+        <Toolbar
+          id="app-toolbar"
+          variant="dense"
+          sx={{
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 1,
+            py: 0.75,
+            columnGap: 1.25,
+            minHeight: TOOLBAR_CONTROL_HEIGHT_PX + 12,
+          }}
         >
-          <div className="pane-label">{labelForTargetLang(doc.meta.activeTargetLang)}</div>
-          <div
-            ref={tgtScrollRef}
-            className="pane-scroll pane-scroll-target"
-            dir={targetTextDir}
-            onScroll={onTgtScroll}
+          <Box
+            id="app-titlebar-drag"
+            sx={{
+              flex: "1 1 120px",
+              display: "flex",
+              alignItems: "center",
+              minWidth: 0,
+              WebkitAppRegion: "drag",
+            }}
           >
-            {doc.children.map((b, i) => {
-              const activeLang = doc.meta.activeTargetLang;
-              const en = canonicalPlainText(b);
-              const display = canonicalTargetPlainText(b, activeLang);
-              const meta = getLocaleSlice(b, activeLang).translationMeta;
-              const placeholder = display.length === 0 && en.length > 0;
-              const mirrorDim = meta.state === "stale" || meta.state === "error";
-              return (
-                <article key={b.id} className="doc-block" data-block-id={b.id}>
-                  <div
-                    className={`target-readonly doc-translation ${placeholder || mirrorDim ? "dim" : ""}`}
-                    aria-label={`Translation paragraph ${i + 1}`}
+            <Typography id="app-title" variant="h6" component="h1" sx={{ fontWeight: 600 }}>
+              Translator
+            </Typography>
+          </Box>
+          <Box id="app-header-actions" sx={{ display: "flex", alignItems: "center", gap: 1.25, flexWrap: "wrap", WebkitAppRegion: "no-drag" }}>
+            <Tooltip title="Import a document (Word, PDF, plain text)">
+              <Button
+                id="toolbar-import-document"
+                variant="outlined"
+                size="small"
+                onClick={() => void onImportDocument()}
+                startIcon={<FileUploadOutlined fontSize="small" />}
+                sx={toolbarButtonSx}
+              >
+                Import…
+              </Button>
+            </Tooltip>
+            <Tooltip title="LLM provider and API keys">
+              <Button
+                id="toolbar-open-configuration"
+                variant="contained"
+                size="small"
+                onClick={() => setConfigOpen(true)}
+                startIcon={<SettingsOutlined fontSize="small" />}
+                sx={toolbarButtonSx}
+              >
+                Settings
+              </Button>
+            </Tooltip>
+            <Box
+              id="toolbar-target-lang-form"
+              component="div"
+              className="toolbar-lang-row"
+              sx={{
+                display: "flex",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 1,
+                minWidth: 0,
+                flexShrink: 0,
+                height: TOOLBAR_CONTROL_HEIGHT_PX,
+              }}
+            >
+              <LanguageOutlined sx={{ fontSize: "1.125rem", color: "text.secondary", flexShrink: 0 }} aria-hidden />
+              <Typography
+                id="toolbar-target-lang-label"
+                component="label"
+                variant="body2"
+                color="text.secondary"
+                htmlFor="toolbar-target-lang-select"
+                sx={{
+                  whiteSpace: "nowrap",
+                  lineHeight: 1,
+                  fontSize: "0.8125rem",
+                  fontWeight: 500,
+                  flexShrink: 0,
+                }}
+              >
+                Target language
+              </Typography>
+              <Select
+                id="toolbar-target-lang-select"
+                labelId="toolbar-target-lang-label"
+                aria-labelledby="toolbar-target-lang-label"
+                className={`target-lang-font ${targetFontClass}`}
+                dir={targetTextDir}
+                value={doc.meta.activeTargetLang}
+                onChange={(e) => setTargetLanguageDropdown(e.target.value)}
+                variant="outlined"
+                size="small"
+                displayEmpty
+                MenuProps={selectMenuProps(320)}
+                sx={{
+                  minWidth: 200,
+                  maxWidth: 280,
+                  height: TOOLBAR_CONTROL_HEIGHT_PX,
+                  fontSize: "0.8125rem",
+                  "& .MuiOutlinedInput-root": {
+                    height: TOOLBAR_CONTROL_HEIGHT_PX,
+                    borderRadius: 1,
+                  },
+                  "& .MuiOutlinedInput-notchedOutline": {
+                    top: 0,
+                  },
+                  "& .MuiSelect-select": {
+                    display: "flex",
+                    alignItems: "center",
+                    minHeight: TOOLBAR_CONTROL_HEIGHT_PX - 2,
+                    py: 0,
+                    px: 1.25,
+                    boxSizing: "border-box",
+                  },
+                }}
+              >
+                {!INDIAN_TARGET_LANGUAGE_OPTIONS.some((o) => o.code === doc.meta.activeTargetLang) && (
+                  <MenuItem id={`toolbar-target-lang-option-${doc.meta.activeTargetLang}`} value={doc.meta.activeTargetLang}>
+                    {labelForTargetLang(doc.meta.activeTargetLang)} ({doc.meta.activeTargetLang})
+                  </MenuItem>
+                )}
+                {INDIAN_TARGET_LANGUAGE_OPTIONS.map((o) => (
+                  <MenuItem id={`toolbar-target-lang-option-${o.code}`} key={o.code} value={o.code}>
+                    {o.label} ({o.code})
+                  </MenuItem>
+                ))}
+              </Select>
+            </Box>
+          </Box>
+          <Box id="app-window-controls-slot" sx={{ ml: "auto", display: "flex", alignItems: "center", flexShrink: 0, WebkitAppRegion: "no-drag" }}>
+            <DesktopTitleBar />
+          </Box>
+        </Toolbar>
+      </AppBar>
+
+      <Box
+        id="translation-editor-body"
+        component="main"
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          px: 2,
+          py: 1.5,
+          maxWidth: 1480,
+          mx: "auto",
+          width: "100%",
+          boxSizing: "border-box",
+        }}
+      >
+        <Typography id="app-subline" variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: "70ch" }}>
+          Source updates as you type. Translation runs automatically <strong>{DEBOUNCE_MS / 1000}s</strong> after you stop
+          editing a paragraph (non-empty text only).
+        </Typography>
+
+        {isLazyDoc && (
+          <Alert id="lazy-translation-banner" severity="info" sx={{ mb: 2 }}>
+            Large document: translations load for the <strong>paragraphs you scroll into view</strong> (plus the first
+            screen). Other paragraphs translate as you reach them.
+          </Alert>
+        )}
+
+        {offline && (
+          <Alert id="offline-banner" severity="warning" sx={{ mb: 2 }} role="status">
+            Translation failed — use <strong>Configuration</strong> to set the LLM provider and keys, then edit again to
+            retry after {DEBOUNCE_MS / 1000}s, or change a character to re-schedule.
+          </Alert>
+        )}
+
+        <Box
+          id="editor-panes"
+          className="panes panes-v2"
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            minWidth: 0,
+            display: "grid",
+            /* Equal columns so each “page” block has the same width as its pair */
+            gridTemplateColumns: { xs: "1fr", md: "minmax(0, 1fr) minmax(0, 1fr)" },
+            gridTemplateRows: { xs: "minmax(0, 1fr) minmax(0, 1fr)", md: "minmax(0, 1fr)" },
+            gap: 2,
+            alignItems: "stretch",
+            overflow: "hidden",
+          }}
+        >
+          <Paper
+            id="pane-source-section"
+            component="section"
+            className="pane pane-source doc-prose"
+            elevation={0}
+            variant="outlined"
+            aria-label="Source text"
+            sx={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, height: "100%", p: 0, overflow: "hidden" }}
+          >
+            <Typography id="pane-source-label" className="pane-label" variant="overline" color="text.secondary" sx={{ px: 1, pt: 1, pb: 0.5 }}>
+              Source
+            </Typography>
+            <Box
+              ref={srcScrollRef}
+              id="pane-scroll-source"
+              className="pane-scroll pane-scroll-source"
+              onScroll={onSrcScroll}
+              sx={{ flex: 1, minHeight: 0, scrollbarGutter: "stable" }}
+            >
+              {doc.children.map((b, i) => (
+                <Box
+                  key={b.id}
+                  component="article"
+                  className="doc-block"
+                  data-block-id={b.id}
+                  sx={{
+                    mb: 2,
+                    display: "flex",
+                    flexDirection: "column",
+                    minHeight: DOC_BLOCK_PAIR_MIN_HEIGHT,
+                    "&:last-child": { mb: 0 },
+                  }}
+                >
+                  <TextField
+                    id={`source-block-input-${b.id}`}
+                    multiline
+                    fullWidth
+                    minRows={4}
+                    aria-label={`Source paragraph ${i + 1}`}
+                    value={canonicalPlainText(b)}
+                    onChange={(e) => onSourceChange(b.id, e.target.value)}
+                    spellCheck
+                    variant="outlined"
+                    size="small"
+                    sx={{
+                      flex: 1,
+                      alignSelf: "stretch",
+                      "& .MuiOutlinedInput-root": {
+                        height: "100%",
+                        alignItems: "stretch",
+                        backgroundColor: "#fafafa",
+                        "&.Mui-focused": { backgroundColor: "#fafafa" },
+                      },
+                      "& .MuiOutlinedInput-input": {
+                        padding: "14px 16px",
+                        boxSizing: "border-box",
+                      },
+                      "& textarea.source-doc-input": {
+                        minHeight: "10rem",
+                        boxSizing: "border-box",
+                      },
+                    }}
+                    slotProps={{ htmlInput: { className: "source-doc-input" } }}
+                  />
+                </Box>
+              ))}
+            </Box>
+          </Paper>
+          <Paper
+            id="pane-target-section"
+            component="section"
+            className={`pane pane-target doc-prose pane-target-pane ${targetFontClass}`}
+            elevation={0}
+            variant="outlined"
+            aria-label="Translation"
+            lang={doc.meta.activeTargetLang}
+            sx={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, height: "100%", p: 0, overflow: "hidden" }}
+          >
+            <Typography id="pane-target-label" className="pane-label" variant="overline" color="text.secondary" sx={{ px: 1, pt: 1, pb: 0.5 }}>
+              {labelForTargetLang(doc.meta.activeTargetLang)}
+            </Typography>
+            <Box
+              ref={tgtScrollRef}
+              id="pane-scroll-target"
+              className="pane-scroll pane-scroll-target"
+              dir={targetTextDir}
+              onScroll={onTgtScroll}
+              sx={{ flex: 1, minHeight: 0, scrollbarGutter: "stable" }}
+            >
+              {doc.children.map((b, i) => {
+                const activeLang = doc.meta.activeTargetLang;
+                const en = canonicalPlainText(b);
+                const display = canonicalTargetPlainText(b, activeLang);
+                const meta = getLocaleSlice(b, activeLang).translationMeta;
+                const placeholder = display.length === 0 && en.length > 0;
+                const mirrorDim = meta.state === "stale" || meta.state === "error";
+                return (
+                  <Box
+                    key={b.id}
+                    component="article"
+                    className="doc-block"
+                    data-block-id={b.id}
+                    sx={{
+                      mb: 2,
+                      display: "flex",
+                      flexDirection: "column",
+                      minHeight: DOC_BLOCK_PAIR_MIN_HEIGHT,
+                      "&:last-child": { mb: 0 },
+                    }}
                   >
-                    {meta.state === "translating" && <span className="pending">Translating… </span>}
-                    {placeholder ? <span className="mirror-faint">{en}</span> : display}
-                  </div>
-                  {meta.state === "error" && meta.lastError && (
-                    <p className="translation-error" role="alert">
-                      {meta.lastError}
-                    </p>
-                  )}
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      </div>
+                    <Box
+                      id={`target-block-display-${b.id}`}
+                      className={`target-readonly doc-translation ${placeholder || mirrorDim ? "dim" : ""}`}
+                      aria-label={`Translation paragraph ${i + 1}`}
+                      component="div"
+                      sx={{ flex: 1, minHeight: "10rem" }}
+                    >
+                      {meta.state === "translating" && (
+                        <Typography id={`target-block-pending-${b.id}`} component="span" className="pending" variant="body2">
+                          Translating…{" "}
+                        </Typography>
+                      )}
+                      {placeholder ? <span className="mirror-faint">{en}</span> : display}
+                    </Box>
+                    {meta.state === "error" && meta.lastError && (
+                      <Typography id={`target-block-error-${b.id}`} className="translation-error" variant="caption" color="error" role="alert" sx={{ display: "block", mt: 0.5 }}>
+                        {meta.lastError}
+                      </Typography>
+                    )}
+                  </Box>
+                );
+              })}
+            </Box>
+          </Paper>
+        </Box>
+      </Box>
+
+      <Box
+        id="app-copyright-footer"
+        component="footer"
+        sx={{
+          flexShrink: 0,
+          py: 1.5,
+          px: 2,
+          borderTop: 1,
+          borderColor: "divider",
+          bgcolor: "background.paper",
+          textAlign: "center",
+        }}
+      >
+        <Typography id="app-copyright-text" variant="caption" color="text.secondary" component="p" sx={{ m: 0 }}>
+          © {new Date().getFullYear()} Biplab Sarkar. All rights reserved.
+        </Typography>
+      </Box>
 
       <LlmConfigModal open={configOpen} onClose={() => setConfigOpen(false)} />
-    </div>
+    </Box>
   );
 }
