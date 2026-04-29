@@ -4,6 +4,7 @@
 # Triggers:
 #   1) Automatic: push an annotated tag matching v* (e.g. after ./scripts/release.sh && git push … v1.2.3).
 #   2) Manual: Actions → Release → Run workflow → enter an existing tag (e.g. v1.2.3) to rebuild/re-upload.
+# Actions use current majors (checkout/setup-node/upload/download v6–v8, gh-release v3) for Node 24 runtimes.
 name: Release
 
 on:
@@ -24,11 +25,11 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
       
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
@@ -44,7 +45,7 @@ jobs:
         run: npm run build && npx electron-builder --linux --publish never
       
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-build
           path: |
@@ -56,11 +57,11 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
       
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
@@ -75,7 +76,7 @@ jobs:
         run: npm run build && npx electron-builder --win --publish never
       
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-build
           path: |
@@ -88,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -105,7 +106,7 @@ jobs:
     
 
       - name: Create Release and upload artifacts
-        uses: softprops/action-gh-release@v2.6.2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           generate_release_notes: true
