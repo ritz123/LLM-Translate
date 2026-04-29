@@ -93,9 +93,10 @@ jobs:
       - name: List release files
         run: find artifacts -type f -print
       
+      # Drop only the GitHub Release, not the tag (--cleanup-tag breaks re-publish for the same v* ref).
       - name: Delete existing release if present
         run: |
-          gh release delete "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}" -y --cleanup-tag || true
+          gh release delete "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}" -y || true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
